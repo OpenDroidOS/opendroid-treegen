@@ -1,0 +1,8 @@
+OpenDroidOS tree generator
+Copyright 2026 OpenDroidOS
+
+Original tooling is licensed under Apache-2.0.
+Uses OpenHarmony build and native configuration interfaces.
+
+OpenHarmony: https://github.com/openharmony
+Linux firmware interface: https://docs.kernel.org/driver-api/firmware/fw_search_path.html

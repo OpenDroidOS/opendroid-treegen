@@ -1,0 +1,36 @@
+{
+  "schema_version": 3,
+  "source_profile": "weekly_20261026",
+  "company": "opendroid",
+  "board": "demo_board",
+  "product": "opendroid_demo",
+  "soc_company": "generic",
+  "soc": "generic_arm64",
+  "target_cpu": "arm64",
+  "base_product": "productdefine/common/base/standard_system.json",
+  "kernel_strategy": "prebuilt",
+  "init_mode": "two-stage",
+  "system_profile": "tablet",
+  "native_config": {
+    "hardware": "demo_hw",
+    "firmware_directory": "/vendor/firmware",
+    "mounts": [{
+      "device": "/dev/block/by-name/system",
+      "mount_point": "/usr",
+      "fs_type": "ext4",
+      "mount_options": ["ro", "barrier=1"],
+      "manager_flags": ["wait", "required", "nofail"]
+    }, {
+      "device": "/dev/block/by-name/vendor",
+      "mount_point": "/vendor",
+      "fs_type": "ext4",
+      "mount_options": ["ro", "barrier=1"],
+      "manager_flags": ["wait"]
+    }],
+    "device_permissions": [{"path": "/dev/example*", "mode": "0660", "uid": "system", "gid": "system"}],
+    "images": {"vendor": {"size_bytes": 268435456, "mount_point": "/vendor"}}
+  },
+  "module_load_order": ["modules/fixture.ko"],
+  "providers": {},
+  "notes": ["Demonstration values; supply actual block devices, filesystem budgets, device nodes and module destinations."]
+}

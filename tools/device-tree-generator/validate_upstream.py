@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OpenDroidOS: check scaffold identities with pinned upstream parsers in a fixture."""
+"""OpenDroidOS: check generated identities with checkout parsers in a fixture."""
 
 import argparse
 import importlib.util
@@ -50,8 +50,8 @@ def validate(source, output, reports=None):
     sys.dont_write_bytecode = True
     reports = generate.report_root(output, reports)
     data = generate.read_json(reports / "porting-input.json")
-    profile = generate.validate_input(data)
-    generate.verify_source(source, profile)
+    generate.validate_input(data)
+    inspection = generate.verify_source(source, data)
     generate.check(output, reports)
 
     # Fail if an imported parser attempts to write the owner's source tree.
@@ -156,7 +156,7 @@ def validate(source, output, reports=None):
                 raise generate.InputError("Tablet access-token feature differs from the native component declaration")
         return {
             "result": "pass", "scope": "Actual Product and BundlePartObj parsing in isolated fixture",
-            "source_profile": profile["id"], "parts_selected": len(parsed._parts),
+            "source_interfaces_checked": len(inspection["checks"]), "parts_selected": len(parsed._parts),
             "native_product_discovery": "pass", "native_board_resolution": device_info["board_path"].replace(str(root) + "/", ""),
             "native_board_compiler": compiler,
             "enable_ramdisk": parsed._build_vars["enable_ramdisk"],

@@ -26,9 +26,9 @@ import tempfile
 import evidence
 import native_layout
 import native_config
+import source_contracts
 
 
-PROFILE_PATH = Path(__file__).resolve().parents[1] / "source-profiles/weekly_20261026.json"
 FEATURES = (
     "display_gpu", "input", "audio", "camera_media", "wifi_bluetooth",
     "power_battery_thermal", "sensors", "usb", "storage",
@@ -80,7 +80,7 @@ def validate_input(data):
     allowed = {"schema_version", "source_profile", "company", "board", "product",
                "target_cpu", "base_product", "kernel_strategy", "providers", "notes", "soc", "soc_company",
                "system_profile", "native_config", "module_load_order", "init_mode"}
-    required = allowed - {"providers", "notes", "system_profile", "native_config", "module_load_order"}
+    required = allowed - {"providers", "notes", "system_profile", "native_config", "module_load_order", "source_profile"}
     if set(data) - allowed:
         raise InputError(f"Unknown input fields: {sorted(set(data) - allowed)}")
     if required - set(data):
@@ -92,13 +92,12 @@ def validate_input(data):
             raise InputError(f"{key} must use lowercase letters, digits and underscores; start with a letter")
     if data["product"] == "common":
         raise InputError("product common is reserved for shared distribution configuration")
-    profile = read_json(PROFILE_PATH)
-    if data["source_profile"] != profile["id"]:
-        raise InputError(f"Only source profile {profile['id']} is supported")
+    if "source_profile" in data and not isinstance(data["source_profile"], str):
+        raise InputError("Legacy source_profile must be a string; it is no longer used")
     if data["target_cpu"] not in ("arm", "arm64"):
         raise InputError("target_cpu must be arm or arm64")
-    if data["base_product"] != profile["base_product"]:
-        raise InputError("This template only supports the reviewed standard_system base product")
+    if data["base_product"] != source_contracts.BASE_PRODUCT:
+        raise InputError("This template requires the standard_system base product")
     if data["kernel_strategy"] != "prebuilt":
         raise InputError("kernel_strategy must be prebuilt")
     if data.get("system_profile", "base") not in ("base", "tablet"):
@@ -127,17 +126,17 @@ def validate_input(data):
     notes = data.get("notes", [])
     if not isinstance(notes, list) or not all(isinstance(n, str) for n in notes):
         raise InputError("notes must be a list of strings")
-    return profile
 
 
-def verify_source(root, profile):
-    checked = {}
-    for relative, expected in profile["contract_files_sha256"].items():
-        source = root / relative
-        if not source.is_file() or digest(source.read_bytes()) != expected:
-            raise InputError(f"Source contract differs or is absent: {relative}; review a new profile first")
-        checked[relative] = expected
-    return checked
+def verify_source(root, data):
+    generated = native_layout.render(data, "", "", "")
+    selections = [json.loads(generated["vendor/opendroid/common/base.json"])]
+    if data.get("system_profile") == "tablet":
+        selections.append(json.loads(generated["vendor/opendroid/common/tablet.json"]))
+    try:
+        return source_contracts.inspect(root, data, selections)
+    except source_contracts.ContractError as error:
+        raise InputError(str(error)) from error
 
 
 def component(identity, path, target):
@@ -189,7 +188,7 @@ def support_markdown(report, prebuilts):
     return "\n".join(lines) + "\n"
 
 
-def render(data, profile, contracts, prebuilts):
+def render(data, contracts, prebuilts):
     company, board, product = (data[k] for k in ("company", "board", "product"))
     board_path = f"device/board/{company}/{board}"
     product_path = f"vendor/{company}/{product}"
@@ -219,16 +218,16 @@ def render(data, profile, contracts, prebuilts):
     if data["init_mode"] == "two-stage":
         root_declared = any(mount["mount_point"] == "/usr" for mount in required_mounts)
         gaps.append({"id": "first_stage", "state": "declared-unvalidated" if root_declared else "unresolved",
-                     "required": "Declare the evidenced required /usr root mount before other early mounts. Supply built-in storage/controller/dm/filesystem prerequisites and any early firmware; vendor-installed modules/init jobs run too late. Check ohos.required_mount cmdline overrides and ramdisk runtime libraries/size. Handle positive mount-error returns and unchecked SwitchRoot failure in pinned early init; nofail alone does not guarantee abort."})
+                     "required": "Declare the evidenced required /usr root mount before other early mounts. Supply built-in storage/controller/dm/filesystem prerequisites and any early firmware; vendor-installed modules/init jobs run too late. Check ohos.required_mount cmdline overrides, mount/root-switch error propagation and ramdisk runtime libraries/size; nofail alone does not guarantee abort."})
     gaps += [{"id": name, "state": data.get("providers", {}).get(name, "unknown"),
               "required": "Trace native interface/provider, kernel interface, build, installation, startup, policy and hardware validation."}
              for name in FEATURES]
     report = {
-        "report_version": 1, "source_profile": profile["id"],
+        "report_version": 1, "source_inspection": "source-inspection.json",
         "project": "opendroid", "organization": "OpenDroidOS",
         "direction": "native-open-source-providers", "state": "scaffold-only",
         "build_ready": False, "flashable": False, "hardware_support": "unverified",
-        "source_contract_files_verified": contracts, "gaps": gaps,
+        "gaps": gaps,
         "layout": {"board": board_path, "soc": f"device/soc/{data['soc_company']}/{data['soc']}",
                    "kernel": f"kernel/{company}/{board}", "product": product_path,
                    "common": "vendor/opendroid/common"},
@@ -263,6 +262,7 @@ def render(data, profile, contracts, prebuilts):
         "porting-input.json": json_text(data),
         "support-report.json": json_text(report),
         "PORTING.md": support_markdown(report, prebuilts),
+        "source-inspection.json": json_text(contracts),
     }
     if prebuilts["reports"]:
         reports["prebuilt-evidence.json"] = json_text(prebuilts)
@@ -273,7 +273,7 @@ def render(data, profile, contracts, prebuilts):
         "native_config_sha256": digest(Path(native_config.__file__).read_bytes()),
         "evidence_reader_sha256": digest(Path(evidence.__file__).read_bytes()),
         "extraction_report_sha256": [r["report_sha256"] for r in prebuilts["reports"]],
-        "profile_sha256": digest(PROFILE_PATH.read_bytes()),
+        "source_inspector_sha256": digest(Path(source_contracts.__file__).read_bytes()),
         "input_sha256": digest(json_text(data).encode()),
         "files": {name: digest(value.encode()) for name, value in sorted(files.items())},
         "executable_files": ["vendor/opendroid/common/scripts/stage_kernel.py"],
@@ -293,9 +293,10 @@ def report_root(output, reports=None):
 
 def generate(input_path, output, source_root, extracted=(), reports=None):
     data = read_json(input_path)
-    profile = validate_input(data)
+    validate_input(data)
+    data.pop("source_profile", None)
     source_root = source_root.resolve()
-    contracts = verify_source(source_root, profile)
+    contracts = verify_source(source_root, data)
     output = output.absolute()
     reports = report_root(output, reports).absolute()
     if output.resolve().is_relative_to(reports.resolve()) or reports.resolve().is_relative_to(output.resolve()):
@@ -310,7 +311,7 @@ def generate(input_path, output, source_root, extracted=(), reports=None):
             if destination.resolve().is_relative_to(root.resolve()):
                 raise InputError("Generate outside extraction directories to preserve evidence inputs")
     prebuilts = evidence.load_extractions(extracted)
-    files, report_files = render(data, profile, contracts, prebuilts)
+    files, report_files = render(data, contracts, prebuilts)
     for destination, content_files in ((output, files), (reports, report_files)):
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".oh-treegen-", dir=destination.parent) as temporary:

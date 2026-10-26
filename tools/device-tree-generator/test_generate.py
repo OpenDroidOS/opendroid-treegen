@@ -171,6 +171,8 @@ class GeneratorTests(unittest.TestCase):
                 self.assertIn('image_conf:image_configs', (output / "device/board/opendroid/demo_board/BUILD.gn").read_text())
                 config = generate.read_json(output / "vendor/opendroid/opendroid_demo/config.json")
                 self.assertIn("productdefine/common/inherit/tablet.json", config["inherit"])
+                self.assertGreater(config["inherit"].index("vendor/opendroid/common/tablet.json"),
+                                   config["inherit"].index("productdefine/common/inherit/tablet.json"))
                 self.assertTrue((output / "device/board/opendroid/demo_board/cfg/init.demo_hw.cfg").is_file())
                 self.assertFalse((output / "device/board/opendroid/demo_board/BUILD.gn").read_text().endswith("deps = []\n}\n"))
                 (reports / "PORTING.md").write_text("owner report edit")

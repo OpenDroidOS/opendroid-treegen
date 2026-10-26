@@ -206,6 +206,7 @@ def render(data, profile, contracts, prebuilts):
     }
     if data.get("system_profile") == "tablet":
         config["inherit"].insert(1, "productdefine/common/inherit/tablet.json")
+        config["inherit"].append("vendor/opendroid/common/tablet.json")
     gaps = [
         {"id": "kernel", "state": "unresolved", "required": "Bind a compatible private kernel/config/module/tree manifest; staging and feature checks exist, image/runtime integration remains open."},
         {"id": "boot_packaging", "state": "unresolved", "required": "Implement the actual bootloader image/header/ramdisk/DTB/DTBO contract."},

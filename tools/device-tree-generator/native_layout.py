@@ -56,7 +56,11 @@ def render(data, header, license_text, notice):
         board_dependencies.append("image_conf:image_configs")
     deps = "\n".join(f'    "{label}",' for label in board_dependencies)
     files = {
-        f"{board_path}/config.gni": header + f'import("//{soc_path}/config.gni")\n',
+        f"{board_path}/config.gni": header + f'''import("//{soc_path}/config.gni")
+
+# hb scans this file before evaluating GN imports.
+board_toolchain_type = "clang"
+''',
         f"{board_path}/BUILD.gn": header + f'''group("board") {{
   deps = [
 {deps}
@@ -188,6 +192,29 @@ group("common") {
         f"{common_path}/base.json": encoded({"subsystems": [{"subsystem": "security", "components": [
             {"component": "selinux_adapter"}]}]}),
     }
+    if data.get("system_profile") == "tablet":
+        files[f"{common_path}/tablet.json"] = encoded({"subsystems": [
+            {"subsystem": "ability", "components": [{"component": "idl_tool"}]},
+            {"subsystem": "arkcompiler", "components": [{"component": "taihe_ffi_gen"}]},
+            {"subsystem": "developtools", "components": [{"component": name} for name in (
+                "ace_js2bundle", "ace_ets2bundle", "global_resource_tool", "packing_tool"
+            )]},
+            {"subsystem": "sdk", "components": [{"component": "sdk"}]},
+            {"subsystem": "hdf", "components": [{"component": "drivers_interface_memorytracker"}]},
+            {"subsystem": "multimedia", "components": [{"component": "ringtone_library"}]},
+            {"subsystem": "thirdparty", "components": [
+                {"component": "parse5"}, {"component": "weex-loader"},
+                {"component": "xmp_toolkit_sdk"},
+                {"component": "typescript"},
+                {"component": "astc-encoder"},
+                {"component": "rust_libc"},
+            ] + [
+                {"component": name, "exclude": "true"} for name in ("eudev", "libsnd")
+            ]},
+            {"subsystem": "security", "components": [{
+                "component": "access_token", "features": ["access_token_enhance_capability = false"]
+            }]},
+        ]})
     if board_options:
         files[f"{kernel_path}/requirements.json"] = encoded({
             "format_version": 1, "required_options": board_options,
@@ -204,6 +231,8 @@ group("common") {
         descriptions[board_path] += f"\nInit hardware key: `{native['hardware']}`.\n"
         if native.get("firmware_directory"):
             descriptions[board_path] += f"Firmware search path: `{native['firmware_directory']}`.\n"
+    if data.get("system_profile") == "tablet":
+        descriptions[common_path] += "\nTablet products inherit `tablet.json` after `productdefine/common/inherit/tablet.json`.\n"
     descriptions[board_path] += f"\nInit mode: `{data['init_mode']}`.\n"
     if board_options:
         descriptions[kernel_path] += "\n`requirements.json` adds the board's built-in ramdisk and first-stage filesystem requirements to the shared SoC requirements.\n"

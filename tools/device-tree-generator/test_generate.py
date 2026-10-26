@@ -135,6 +135,21 @@ class GeneratorTests(unittest.TestCase):
                     generate.generate(input_path, output, source)
                 self.assertEqual(edited.read_text(), "user edit")
 
+    def test_native_build_helper_requires_executable_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            input_path = root / "input.json"
+            input_path.write_text(generate.json_text(self.data))
+            with patch.object(generate, "verify_source", return_value={}):
+                generate.generate(input_path, root / "tree", source)
+            helper = root / "tree/vendor/opendroid/common/scripts/stage_kernel.py"
+            self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+            helper.chmod(0o644)
+            with self.assertRaisesRegex(generate.InputError, "not executable"):
+                generate.check(root / "tree")
+
     def test_no_source_checkout_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -165,7 +180,7 @@ class GeneratorTests(unittest.TestCase):
                 kernel = output / "kernel/opendroid/demo_board/BUILD.gn"
                 self.assertIn("stage_kernel.py", kernel.read_text())
                 self.assertIn('declare_args()', kernel.read_text())
-                self.assertIn("opendroid_kernel_manifest", kernel.read_text())
+                self.assertIn("opendroid_kernel_selection", kernel.read_text())
                 self.assertIn("opendroid.para", (output / "vendor/opendroid/common/BUILD.gn").read_text())
                 self.assertIn('cfg:native_configs', (output / "device/board/opendroid/demo_board/BUILD.gn").read_text())
                 self.assertIn('image_conf:image_configs', (output / "device/board/opendroid/demo_board/BUILD.gn").read_text())

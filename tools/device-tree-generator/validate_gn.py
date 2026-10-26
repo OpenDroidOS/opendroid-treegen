@@ -40,7 +40,8 @@ def validate(output, reports, gn):
         (root / "toolchain").mkdir()
         (root / ".gn").write_text(
             'buildconfig = "//build/BUILDCONFIG.gn"\n'
-            f'script_executable = {json.dumps(sys.executable)}\n')
+            'exec_script_allowlist = []\n'
+            'script_executable = "/usr/bin/env"\n')
         (root / "build/BUILDCONFIG.gn").write_text(
             'set_default_toolchain("//toolchain:host")\n'
             f'target_cpu = {json.dumps(data["target_cpu"])}\n'
@@ -157,12 +158,19 @@ template("ohos_copy") {
             entries.append({"role": "module", "path": name, "sha256": generate.digest(payload),
                             "destination": destination})
         manifest = private / "selection.json"
+        module_order = root / layout["kernel"] / "module-order.json"
+        requirements_path = root / layout["soc"] / "kernel/requirements.json"
+        selection_index = 0
 
         def select():
+            nonlocal selection_index
             manifest.write_text(generate.json_text({"format_version": 1, "state": "selected", "files": entries}))
+            description = private / f"gn-selection-{selection_index}.json"
+            selection_index += 1
+            stage_kernel.prepare(manifest, requirements_path, module_order, description, additional)
+            run([str(gn), "gen", "out", "--args=opendroid_kernel_selection=" + json.dumps(str(description))])
 
         select()
-        run([str(gn), "gen", "out", "--args=opendroid_kernel_manifest=" + json.dumps(str(manifest))])
         run(["ninja", "-C", "out", "all"])
         staged = list((root / "out/opendroid-prebuilts" / data["board"]).glob("*/stage-report.json"))
         if len(staged) != 1 or (staged[0].parent / "Image").read_bytes() != (private / "Image").read_bytes():
@@ -174,6 +182,10 @@ template("ohos_copy") {
         changed = b"second synthetic kernel selection\n"
         (private / "Image").write_bytes(changed)
         entries[0]["sha256"] = generate.digest(changed)
+        manifest.write_text(generate.json_text({"format_version": 1, "state": "selected", "files": entries}))
+        stale = run(["ninja", "-C", "out", "all"], success=False)
+        if not stale.returncode or "stale or invalid" not in stale.stdout + stale.stderr:
+            raise generate.InputError("Changed manifest was not rejected before explicit preparation")
         select()
         run(["ninja", "-C", "out", "all"])
         stages = list((root / "out/opendroid-prebuilts" / data["board"]).glob("*/stage-report.json"))
@@ -184,11 +196,26 @@ template("ohos_copy") {
             previous = {str(p.relative_to(root / "out/opendroid-prebuilts")): p.read_bytes()
                         for p in (root / "out/opendroid-prebuilts").rglob("*") if p.is_file()}
             board_requirements.write_text(board_requirements.read_text() + "\n")
+            stale = run(["ninja", "-C", "out", "all"], success=False)
+            if not stale.returncode or "stale or invalid" not in stale.stdout + stale.stderr:
+                raise generate.InputError("Changed board requirements did not invalidate the prepared selection")
+            select()
             run(["ninja", "-C", "out", "all"])
             stages = list((root / "out/opendroid-prebuilts" / data["board"]).glob("*/stage-report.json"))
             if len(stages) != 3 or any((root / "out/opendroid-prebuilts" / name).read_bytes() != contents
                                       for name, contents in previous.items()):
                 raise generate.InputError("Board requirement change did not create a new stage and preserve previous bytes")
+        previous = {str(p.relative_to(root / "out/opendroid-prebuilts")): p.read_bytes()
+                    for p in (root / "out/opendroid-prebuilts").rglob("*") if p.is_file()}
+        module_order.write_text(module_order.read_text() + "\n")
+        stale = run(["ninja", "-C", "out", "all"], success=False)
+        if not stale.returncode or "stale or invalid" not in stale.stdout + stale.stderr:
+            raise generate.InputError("Changed module order did not invalidate the prepared selection")
+        select()
+        run(["ninja", "-C", "out", "all"])
+        if any((root / "out/opendroid-prebuilts" / name).read_bytes() != contents
+               for name, contents in previous.items()):
+            raise generate.InputError("Module order preparation changed a previous stage")
         params = root / "out/install/sys_prod/etc/param"
         if (params / "product.para").read_bytes() != (root / layout["product"] / "product.para").read_bytes():
             raise generate.InputError("Product parameter copy differs")
@@ -200,7 +227,9 @@ template("ohos_copy") {
         "gn_sha256": hashlib.sha256(gn.read_bytes()).hexdigest(), "scope": "Isolated generated GN/Ninja host fixture",
         "board_soc_imports": "pass", "unselected_manifest": "rejected", "selected_kernel_staging": "pass",
         "changed_selection": "new content-addressed output; previous stage preserved",
-        "board_requirement_dependency": "Ninja regenerated a new stage" if additional else "no board descriptor",
+        "board_requirement_dependency": "Stale selection rejected; explicit preparation creates a new stage" if additional else "no board descriptor",
+        "module_order_dependency": "Stale selection rejected; explicit preparation creates a new stage",
+        "exec_script_allowlist": "Empty; no GN-time scripts permitted",
         "parameter_targets": "invocations checked with stand-in ohos_prebuilt_etc; copied bytes verified",
         "native_configuration": native_validation,
         "real_upstream_prebuilt_template": "not-executed", "os_build": "not-run", "device": "not-tested",

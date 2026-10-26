@@ -59,10 +59,25 @@ the source checkout and extraction directories. Existing files are preserved.
 
 PREBUILT SELECTION
 -----------------
-Set GN argument opendroid_kernel_manifest to a private JSON manifest:
+Create a private JSON manifest:
 format_version1, state=selected, files with role,path,sha256,destination.
 Include one kernel and one config. Optional roles: module,dtb,dtbo.
 Paths are relative to the manifest directory.
+
+Prepare a GN selection with vendor/opendroid/common/scripts/stage_kernel.py:
+
+python3 vendor/opendroid/common/scripts/stage_kernel.py --prepare \
+  --manifest /path/to/private/prebuilts.json \
+  --requirements device/soc/generic/generic_arm64/kernel/requirements.json \
+  --additional-requirements kernel/opendroid/demo_board/requirements.json \
+  --module-order kernel/opendroid/demo_board/module-order.json \
+  --output /path/to/private/selection.json
+
+Use the paths from the generated kernel README for another board. Set GN
+argument opendroid_kernel_selection to the prepared JSON file. GN reads it
+without executing scripts. Staging revalidates its descriptors and payloads.
+Prepare a new output file when inputs or source paths change; existing
+descriptions are preserved.
 
 The staging helper checks hashes and kernel options. Modules install under
 /vendor/lib/opendroid/<destination>; module_load_order generates native insmod

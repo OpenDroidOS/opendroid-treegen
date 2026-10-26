@@ -82,36 +82,41 @@ board_fpu = "{'neon-fp-armv8' if data['target_cpu'] == 'arm64' else 'neon'}"
         f"{kernel_path}/BUILD.gn": header + f'''import("//build/ohos.gni")
 
 declare_args() {{
-  opendroid_kernel_manifest = "//{kernel_path}/prebuilts.json"
+  opendroid_kernel_selection = ""
 }}
 
 _requirements = "//{soc_path}/kernel/requirements.json"
 _additional_requirements = {additional_requirements}
 _module_order = "module-order.json"
 _stager = "//{common_path}/scripts/stage_kernel.py"
-_descriptor_inputs = [ opendroid_kernel_manifest, _requirements, _module_order ]
-_describe_args = [
-  "--describe",
-  "--manifest",
-  rebase_path(opendroid_kernel_manifest),
-  "--requirements",
-  rebase_path(_requirements),
-  "--module-order",
-  rebase_path(_module_order),
-]
-foreach(requirement, _additional_requirements) {{
-  _descriptor_inputs += [ requirement ]
-  _describe_args += [ "--additional-requirements", rebase_path(requirement) ]
+assert(opendroid_kernel_selection != "",
+       "Kernel prebuilt set is unselected; run stage_kernel.py --prepare and set opendroid_kernel_selection")
+_selection = read_file(opendroid_kernel_selection, "json")
+assert(_selection.format_version == 1, "Unsupported kernel selection description")
+_id_check = _selection.id
+foreach(digit, [ "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f" ]) {{
+  _id_check = string_replace(_id_check, digit, "")
 }}
-_selection = exec_script(_stager, _describe_args, "json", _descriptor_inputs)
-_manifest_dir = get_path_info(opendroid_kernel_manifest, "dir")
+assert(_selection.id != "" && _id_check == "", "Invalid kernel selection identity")
+foreach(item, _selection.files) {{
+  foreach(path, [ item.path, item.destination ]) {{
+    assert(string_replace(path, "\\\\", "") == path, "Kernel file paths must use POSIX separators")
+    foreach(component, string_split(path, "/")) {{
+      assert(component != "" && component != "." && component != "..",
+             "Kernel file paths must be relative without traversal")
+    }}
+  }}
+}}
+_manifest_dir = get_path_info(_selection.manifest_path, "dir")
 _stage_dir = "$root_build_dir/opendroid-prebuilts/{board}/${{_selection.id}}"
 
 action("kernel") {{
   script = _stager
   inputs = [
-    opendroid_kernel_manifest,
+    opendroid_kernel_selection,
+    _selection.manifest_path,
     _requirements,
+    _module_order,
   ] + _additional_requirements
   outputs = [ "$_stage_dir/stage-report.json" ]
   foreach(item, _selection.files) {{
@@ -120,10 +125,14 @@ action("kernel") {{
   }}
   args = [
     "--allow-empty-output",
+    "--selection",
+    rebase_path(opendroid_kernel_selection, root_build_dir),
     "--manifest",
-    rebase_path(opendroid_kernel_manifest, root_build_dir),
+    rebase_path(_selection.manifest_path, root_build_dir),
     "--requirements",
     rebase_path(_requirements, root_build_dir),
+    "--module-order",
+    rebase_path(_module_order, root_build_dir),
     "--output",
     rebase_path(_stage_dir, root_build_dir),
   ]
@@ -202,29 +211,61 @@ group("common") {
             {"subsystem": "sdk", "components": [{"component": "sdk"}]},
             {"subsystem": "hdf", "components": [{"component": "drivers_interface_memorytracker"}]},
             {"subsystem": "multimedia", "components": [{"component": "ringtone_library"}]},
+            {"subsystem": "graphic", "components": [{"component": "graphics_effect"}]},
+            {"subsystem": "telephony", "components": [{"component": "telephony_data"}]},
             {"subsystem": "thirdparty", "components": [
                 {"component": "parse5"}, {"component": "weex-loader"},
                 {"component": "xmp_toolkit_sdk"},
                 {"component": "typescript"},
                 {"component": "astc-encoder"},
                 {"component": "rust_libc"},
+                {"component": "optimized_routines"},
+                {"component": "lzma"},
+                {"component": "vulkan-loader"},
+                {"component": "abseil-cpp"},
+                {"component": "vma"},
             ] + [
                 {"component": name, "exclude": "true"} for name in ("eudev", "libsnd")
             ]},
             {"subsystem": "security", "components": [{
                 "component": "access_token", "features": ["access_token_enhance_capability = false"]
-            }]},
+            }, {"component": "security_guard"}, {"component": "asset"}]},
         ]})
     if board_options:
         files[f"{kernel_path}/requirements.json"] = encoded({
             "format_version": 1, "required_options": board_options,
         })
+    board_requirement_argument = (f"  --additional-requirements {kernel_path}/requirements.json \\\n"
+                                  if board_options else "")
     descriptions = {
         board_path: f"# {board}\n\nOpenHarmony board configuration. Imports `{soc_path}` and uses `{kernel_path}` for prebuilt kernel and module integration.\n",
         soc_path: f"# {soc}\n\nShared {data['target_cpu']} build settings and Linux kernel requirements for OpenHarmony.\n",
-        kernel_path: f"# {board} kernel integration\n\nSet `opendroid_kernel_manifest` to a private selection manifest.\n\nManifest fields: `format_version: 1`, `state: selected`, and `files` entries with `role`, `path`, `sha256`, `destination`. Paths are relative to the manifest. Include one `kernel` and one `config`; optional roles are `module`, `dtb`, `dtbo`.\n\nModules install at `/vendor/lib/opendroid/<destination>`. `module-order.json` lists their init load order. Kernel options are checked against `{soc_path}/kernel/requirements.json`.\n",
+        kernel_path: f'''# {board} kernel integration
+
+Prepare a private GN selection from the source root:
+
+```sh
+python3 vendor/opendroid/common/scripts/stage_kernel.py --prepare \\
+  --manifest /path/to/private/prebuilts.json \\
+  --requirements {soc_path}/kernel/requirements.json \\
+{board_requirement_argument}  --module-order {kernel_path}/module-order.json \\
+  --output /path/to/private/selection.json
+```
+
+Set `opendroid_kernel_selection` to the prepared file. Use a new output path
+when the manifest, requirements, module order or source paths change.
+
+The input manifest has `format_version: 1`, `state: selected`, and `files`
+entries with `role`, `path`, `sha256`, `destination`. Paths are relative to the
+manifest. Include one `kernel` and one `config`; optional roles are `module`,
+`dtb`, `dtbo`.
+
+Staging rechecks the prepared description, payload hashes and kernel options.
+Modules install at `/vendor/lib/opendroid/<destination>`. `module-order.json`
+lists their init load order; module dependencies and ABI need a matching set.
+''',
         product_path: f"# {product}\n\nOpenHarmony {data.get('system_profile', 'base')} product configuration for `{board_path}`. Inherits `vendor/opendroid/common` and installs product parameters.\n",
-        common_path: "# OpenDroid common configuration\n\nShared OpenHarmony product components, distribution parameters and prebuilt staging tools.\n\n`scripts/stage_kernel.py` checks selected file hashes and kernel configuration before staging.\n",
+        common_path: "# OpenDroid common configuration\n\nShared OpenHarmony product components, distribution parameters and prebuilt staging tools.\n\n`scripts/stage_kernel.py --prepare` writes a private GN selection description. Set\n`opendroid_kernel_selection` to that file. Staging rechecks descriptors, selected\nfile hashes and kernel configuration before publishing outputs.\n",
     }
     if data.get("native_config"):
         native = data["native_config"]

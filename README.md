@@ -11,7 +11,7 @@ python3 -B tools/device-tree-generator/generate.py generate \
 
 Replace the example values with device inputs. Add
 `--extracted /path/to/extractor-output` to read extractor results.
-Output directories must be new. Kernel staging requires a selected private manifest.
+Output directories must be new. Kernel staging requires a prepared private selection.
 
 Linux and Python 3.9+. Details: [generator README](tools/device-tree-generator/README.txt).
 

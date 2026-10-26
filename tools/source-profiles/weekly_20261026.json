@@ -2,6 +2,13 @@
   "id": "weekly_20261026",
   "base_product": "productdefine/common/base/standard_system.json",
   "contract_files_sha256": {
+    ".gn": "b37bfa6542e4b8ffb1ffd35b8de3387f7195c7f46c96e157522db15e44c4f5db",
+    "build/core/gn/ohos_exec_script_allowlist.gni": "c68cc9c85a9daae2ec0d792fbdee184a66cbc3a6a455cf8d0cf69779fb0820c7",
+    "base/security/security_guard/bundle.json": "de645dff3133cd138941581c5debc05d7ac373876c362f60cfd8a133a3bd3a8e",
+    "base/security/asset/bundle.json": "823e6ddf829f940ebe61cb896e87b7793394bb26894d029c87775bf7bbf58b4c",
+    "third_party/optimized-routines/bundle.json": "5e13bbe812e96374d6bcbe3eaf497150c71455c628ae99516c9ad7085ed18cf2",
+    "base/telephony/telephony_data/bundle.json": "e7d37f45b92bd38da6d9d9c4761d10f8294d995f3062e7c0298b8a152f572f3f",
+    "third_party/musl/musl_template.gni": "b3ac6b903df1ba75847a18266327e124ba0560d6575c0f7b30a5f702588631f1",
     "commonlibrary/memory_utils/libmeminfo/BUILD.gn": "f22343238cb78f0a16adf45d7666660ea9fc005c16875031bb75e31736207526",
     "drivers/interface/memorytracker/bundle.json": "1c84f4912f80397de88dc849e72f9bff265a336fefd3f6e0c3c007e110c20c95",
     "interface/sdk-js/bundle.json": "f673b10123ec2917a03cea1710948ea6c63c52532c9fd83ef751df98bf680356",

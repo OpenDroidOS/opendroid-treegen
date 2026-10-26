@@ -78,6 +78,126 @@ class KernelStagingTests(unittest.TestCase):
         self.assertEqual(originals, {p.name: p.read_bytes() for p in self.inputs.iterdir()})
         self.assertEqual((self.output / "kernel/Image").read_bytes(), (self.inputs / "Image").read_bytes())
 
+    def prepare_selection(self, name="prepared.json"):
+        order = self.root / "module-order.json"
+        if not order.exists():
+            order.write_text(json.dumps({"format_version": 1, "modules": ["modules/test.ko"]}))
+        output = self.root / name
+        data = stage_kernel.prepare(self.manifest_path, self.requirements_path, order, output)
+        return output, order, data
+
+    def test_prepared_selection_is_immutable_and_stages_with_all_bindings(self):
+        path, order, description = self.prepare_selection()
+        self.assertEqual(description, json.loads(path.read_text()))
+        before = path.stat().st_mtime_ns
+        self.assertEqual(self.prepare_selection()[2], description)
+        self.assertEqual(path.stat().st_mtime_ns, before)
+        report = stage_kernel.stage(self.manifest_path, self.requirements_path, self.output,
+                                    selection_path=path, module_order_path=order)
+        self.assertEqual(report["selection_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(report["module_order_sha256"], hashlib.sha256(order.read_bytes()).hexdigest())
+        self.assertEqual((self.output / "kernel/Image").read_bytes(), (self.inputs / "Image").read_bytes())
+
+    def test_prepared_selection_rejects_stale_manifest_requirements_and_order(self):
+        path, order, description = self.prepare_selection()
+        for changed in (self.manifest_path, self.requirements_path, order):
+            with self.subTest(changed=changed.name):
+                original = changed.read_bytes()
+                changed.write_bytes(original + b"\n")
+                with self.assertRaisesRegex(stage_kernel.StageError, "stale or invalid"):
+                    stage_kernel.stage(self.manifest_path, self.requirements_path, self.output,
+                                       selection_path=path, module_order_path=order)
+                self.assertFalse(self.output.exists())
+                with self.assertRaisesRegex(stage_kernel.StageError, "already exists"):
+                    self.prepare_selection()
+                fresh = self.prepare_selection(changed.name + ".prepared.json")[2]
+                self.assertNotEqual(fresh["id"], description["id"])
+                changed.write_bytes(original)
+
+    def test_preparation_rejects_invalid_order_and_output_input_collisions(self):
+        order = self.root / "module-order.json"
+        order.write_text(json.dumps({"format_version": 1, "modules": ["modules/missing.ko"]}))
+        output = self.root / "new-description.json"
+        with self.assertRaisesRegex(stage_kernel.StageError, "not a selected module"):
+            stage_kernel.prepare(self.manifest_path, self.requirements_path, order, output)
+        self.assertFalse(output.exists())
+        order.write_text(json.dumps({"format_version": 1, "modules": []}))
+        for protected in (self.manifest_path, self.requirements_path, order, self.inputs / "Image"):
+            before = protected.read_bytes()
+            with self.assertRaisesRegex(stage_kernel.StageError, "must not replace"):
+                stage_kernel.prepare(self.manifest_path, self.requirements_path, order, protected)
+            self.assertEqual(protected.read_bytes(), before)
+
+    def test_selection_tampering_and_payload_change_are_rejected_before_output(self):
+        path, order, description = self.prepare_selection()
+        altered = copy.deepcopy(description)
+        altered["files"][0]["destination"] = "../outside"
+        path.write_text(json.dumps(altered))
+        with self.assertRaisesRegex(stage_kernel.StageError, "stale or invalid"):
+            stage_kernel.stage(self.manifest_path, self.requirements_path, self.output,
+                               selection_path=path, module_order_path=order)
+        self.assertFalse(self.output.exists())
+        path.write_text(json.dumps(description))
+        (self.inputs / "Image").write_bytes(b"changed after preparation")
+        with self.assertRaisesRegex(stage_kernel.StageError, "SHA256 mismatch"):
+            stage_kernel.stage(self.manifest_path, self.requirements_path, self.output,
+                               selection_path=path, module_order_path=order)
+        self.assertFalse(self.output.exists())
+
+    def test_preparation_publication_race_preserves_concurrent_output(self):
+        order = self.root / "module-order.json"
+        order.write_text(json.dumps({"format_version": 1, "modules": []}))
+        output = self.root / "description.json"
+        link = stage_kernel.os.link
+        def create_before_publication(source, destination, **kwargs):
+            Path(destination).write_text("concurrent contents")
+            return link(source, destination, **kwargs)
+        with patch.object(stage_kernel.os, "link", side_effect=create_before_publication):
+            with self.assertRaisesRegex(stage_kernel.StageError, "appeared during"):
+                stage_kernel.prepare(self.manifest_path, self.requirements_path, order, output)
+        self.assertEqual(output.read_text(), "concurrent contents")
+        self.assertEqual(list(self.root.glob(".kernel-selection-*")), [])
+
+    def test_prepared_selection_cannot_substitute_requirement_descriptors(self):
+        alternative = self.root / "alternative-requirements.json"
+        alternative.write_text(json.dumps({"format_version": 1, "required_options": {"CONFIG_ARM64": ["y"]}}))
+        order = self.root / "module-order.json"
+        order.write_text(json.dumps({"format_version": 1, "modules": []}))
+        selection = self.root / "description.json"
+        stage_kernel.prepare(self.manifest_path, alternative, order, selection)
+        with self.assertRaisesRegex(stage_kernel.StageError, "stale or invalid"):
+            stage_kernel.stage(self.manifest_path, self.requirements_path, self.output,
+                               selection_path=selection, module_order_path=order)
+        self.assertFalse(self.output.exists())
+
+    def test_prepared_description_change_during_copy_stops_publication(self):
+        selection, order, _ = self.prepare_selection()
+        original = stage_kernel._hash_file
+        def change_after_copy(path, copy_to=None):
+            result = original(path, copy_to)
+            if copy_to is not None:
+                selection.write_text(selection.read_text() + "\n")
+            return result
+        with patch.object(stage_kernel, "_hash_file", side_effect=change_after_copy):
+            with self.assertRaisesRegex(stage_kernel.StageError, "descriptor changed"):
+                stage_kernel.stage(self.manifest_path, self.requirements_path, self.output,
+                                   selection_path=selection, module_order_path=order)
+        self.assertFalse(self.output.exists())
+
+    def test_prepare_and_stage_selection_cli(self):
+        order = self.root / "module-order.json"
+        order.write_text(json.dumps({"format_version": 1, "modules": []}))
+        selection = self.root / "description.json"
+        args = ["--manifest", str(self.manifest_path), "--requirements", str(self.requirements_path),
+                "--module-order", str(order)]
+        with patch("sys.stdout", io.StringIO()) as captured:
+            self.assertEqual(stage_kernel.main(args + ["--prepare", "--output", str(selection)]), 0)
+        self.assertEqual(json.loads(captured.getvalue()), json.loads(selection.read_text()))
+        with patch("sys.stdout", io.StringIO()) as captured:
+            self.assertEqual(stage_kernel.main(args + ["--selection", str(selection), "--output", str(self.output)]), 0)
+        self.assertEqual(json.loads(captured.getvalue())["selection_sha256"],
+                         hashlib.sha256(selection.read_bytes()).hexdigest())
+
     def test_unselected_empty_and_missing_required_roles(self):
         original = copy.deepcopy(self.data)
         for state, entries in (("unselected", []), ("selected", []),

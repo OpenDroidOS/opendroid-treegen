@@ -276,6 +276,7 @@ def render(data, profile, contracts, prebuilts):
         "profile_sha256": digest(PROFILE_PATH.read_bytes()),
         "input_sha256": digest(json_text(data).encode()),
         "files": {name: digest(value.encode()) for name, value in sorted(files.items())},
+        "executable_files": ["vendor/opendroid/common/scripts/stage_kernel.py"],
         "report_files": {name: digest(value.encode()) for name, value in sorted(reports.items())},
     }
     reports["generation-manifest.json"] = json_text(manifest)
@@ -319,6 +320,8 @@ def generate(input_path, output, source_root, extracted=(), reports=None):
                 target = stage / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8")
+                if destination == output and relative == "vendor/opendroid/common/scripts/stage_kernel.py":
+                    target.chmod(0o755)
             destination.mkdir()
             for child in stage.iterdir():
                 os.rename(child, destination / child.name)
@@ -336,6 +339,13 @@ def check(output, reports=None):
     if not isinstance(manifest, dict) or type(manifest.get("manifest_version")) is not int or manifest["manifest_version"] not in (1, 2):
         raise InputError("Unsupported generation manifest")
     count = check_entries(output, manifest.get("files"))
+    executables = manifest.get("executable_files", [])
+    if (not isinstance(executables, list) or
+            any(not isinstance(name, str) or name not in manifest["files"] for name in executables)):
+        raise InputError("Invalid executable file list in generation manifest")
+    for name in executables:
+        if (output / name).stat().st_mode & 0o111 != 0o111:
+            raise InputError(f"Managed build script is not executable: {name}")
     if manifest["manifest_version"] == 2:
         count += check_entries(reports, manifest.get("report_files"))
     return count
@@ -368,7 +378,7 @@ def main(argv=None):
     make.add_argument("--reports", type=Path, help="Separate report directory; default <output>-reports")
     make.add_argument("--extracted", action="append", default=[], type=Path,
                       help="Extraction directory or report file; repeat for separate captures")
-    verify = commands.add_parser("check", help="Check managed artifact hashes, not compatibility")
+    verify = commands.add_parser("check", help="Check managed hashes and executable modes")
     verify.add_argument("output", type=Path)
     verify.add_argument("--reports", type=Path)
     args = parser.parse_args(argv)

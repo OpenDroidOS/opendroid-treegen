@@ -320,23 +320,80 @@ def describe(manifest_path, requirements_path, module_order_path=None, additiona
     identity = hashlib.sha256((manifest_hash + "".join(item[1] for item in descriptors)).encode("ascii")).hexdigest()
     result = {"id": identity, "files": files}
     if module_order_path is not None:
-        order, _ = _json_file(_absolute(module_order_path))
-        if (not isinstance(order, dict) or set(order) != {"format_version", "modules"}
-                or type(order["format_version"]) is not int or order["format_version"] != 1
-                or not isinstance(order["modules"], list)):
-            raise StageError("Module order requires format_version 1 and modules list")
-        available = {item["destination"] for item in files if item["role"] == "module"}
-        seen = set()
-        for destination in order["modules"]:
-            _relative(destination, "module order destination")
-            if destination in seen or destination not in available:
-                raise StageError(f"Module load destination is duplicate or not a selected module: {destination}")
-            seen.add(destination)
-        result["module_load_order"] = order["modules"]
+        result["module_load_order"], _ = _module_order(module_order_path, files)
     return result
 
 
-def stage(manifest_path, requirements_path, output, allow_empty_output=False, additional_requirements=()):
+def _module_order(path, files):
+    order, order_hash = _json_file(_absolute(path))
+    if (set(order) != {"format_version", "modules"}
+            or type(order["format_version"]) is not int or order["format_version"] != 1
+            or not isinstance(order["modules"], list)):
+        raise StageError("Module order requires format_version 1 and modules list")
+    available = {item["destination"] for item in files if item["role"] == "module"}
+    seen = set()
+    for destination in order["modules"]:
+        _relative(destination, "module order destination")
+        if destination in seen or destination not in available:
+            raise StageError(f"Module load destination is duplicate or not a selected module: {destination}")
+        seen.add(destination)
+    return order["modules"], order_hash
+
+
+def _selection_description(manifest_path, requirements_path, module_order_path, additional_requirements=()):
+    if module_order_path is None:
+        raise StageError("Preparing a selection requires --module-order")
+    manifest_path = _absolute(manifest_path)
+    manifest, manifest_hash = _json_file(manifest_path)
+    files = _manifest(manifest)
+    _, requirements = load_requirements(requirements_path, additional_requirements)
+    module_order_path = _absolute(module_order_path)
+    order, order_hash = _module_order(module_order_path, files)
+    description = {
+        "format_version": 1, "manifest_path": str(manifest_path),
+        "manifest_sha256": manifest_hash,
+        "requirements": [{"path": str(path), "sha256": value} for path, value in requirements],
+        "module_order_path": str(module_order_path), "module_order_sha256": order_hash,
+        "module_load_order": order, "files": files,
+    }
+    raw = json.dumps(description, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return dict(description, id=hashlib.sha256(raw).hexdigest())
+
+
+def prepare(manifest_path, requirements_path, module_order_path, output, additional_requirements=()):
+    """Publish an immutable GN input; payload hashes are verified when staging."""
+    description = _selection_description(manifest_path, requirements_path, module_order_path,
+                                         additional_requirements)
+    output = _absolute(output)
+    protected = {Path(description["manifest_path"]), Path(description["module_order_path"])}
+    protected.update(Path(item["path"]) for item in description["requirements"])
+    protected.update(Path(description["manifest_path"]).parent / item["path"]
+                     for item in description["files"])
+    if output in protected:
+        raise StageError("Description output must not replace an input descriptor or payload")
+    if output.exists() or output.is_symlink():
+        if _json_file(output)[0] != description:
+            raise StageError("Description output already exists; choose a new output path")
+        return description
+    _directory(output.parent, create=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".kernel-selection-", dir=output.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write((json.dumps(description, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        if _selection_description(manifest_path, requirements_path, module_order_path,
+                                  additional_requirements) != description:
+            raise StageError("An input descriptor changed while preparing the selection")
+        try:
+            os.link(temporary, output, follow_symlinks=False)
+        except FileExistsError as error:
+            raise StageError("Description output appeared during preparation; preserved") from error
+    finally:
+        os.unlink(temporary)
+    return description
+
+
+def stage(manifest_path, requirements_path, output, allow_empty_output=False, additional_requirements=(),
+          selection_path=None, module_order_path=None):
     """Return provenance after validating and atomically staging a selected set."""
     manifest_path = _absolute(manifest_path)
     requirements_path = _absolute(requirements_path)
@@ -344,12 +401,24 @@ def stage(manifest_path, requirements_path, output, allow_empty_output=False, ad
     if output == manifest_path.parent or manifest_path.parent in output.parents:
         raise StageError("Output must be outside the manifest input directory")
     descriptor_paths = [requirements_path] + [_absolute(path) for path in additional_requirements]
+    descriptor_paths += [_absolute(path) for path in (selection_path, module_order_path) if path is not None]
     if output in manifest_path.parents or any(output in path.parents for path in descriptor_paths):
         raise StageError("Output must not contain an input descriptor")
     manifest, manifest_hash = _json_file(manifest_path)
     entries = _manifest(manifest)
     required_options, descriptors = load_requirements(requirements_path, additional_requirements)
     requirements_hash = descriptors[0][1]
+    selection_hash = None
+    extra_descriptors = []
+    if selection_path is not None:
+        selection_path = _absolute(selection_path)
+        selection, selection_hash = _json_file(selection_path)
+        expected = _selection_description(manifest_path, requirements_path, module_order_path,
+                                          additional_requirements)
+        if selection != expected:
+            raise StageError("Selection description is stale or invalid; prepare a new description")
+        extra_descriptors = [(selection_path, selection_hash),
+                             (_absolute(module_order_path), expected["module_order_sha256"])]
     files = []
     config_observations = None
     for entry in entries:
@@ -378,6 +447,9 @@ def stage(manifest_path, requirements_path, output, allow_empty_output=False, ad
     }
     if len(descriptors) > 1:
         report["additional_requirements_sha256"] = [item[1] for item in descriptors[1:]]
+    if selection_hash is not None:
+        report["selection_sha256"] = selection_hash
+        report["module_order_sha256"] = expected["module_order_sha256"]
     report_bytes = (json.dumps(report, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     expected = {item["destination"]: (item["sha256"], item["bytes"]) for item in files}
     expected[REPORT_NAME] = (hashlib.sha256(report_bytes).hexdigest(), len(report_bytes))
@@ -402,7 +474,7 @@ def stage(manifest_path, requirements_path, output, allow_empty_output=False, ad
         (temporary / REPORT_NAME).write_bytes(report_bytes)
         # Recheck descriptors before publishing, including their no-symlink rule.
         if (_json_file(manifest_path)[1] != manifest_hash or
-                any(_json_file(path)[1] != expected_hash for path, expected_hash in descriptors)):
+                any(_json_file(path)[1] != expected_hash for path, expected_hash in descriptors + extra_descriptors)):
             raise StageError("An input descriptor changed during staging")
         if empty_directories is not None:
             # GN may precreate the expected output parents. Accept only their
@@ -437,22 +509,31 @@ def main(argv=None):
     parser.add_argument("--requirements", required=True, type=Path)
     parser.add_argument("--additional-requirements", action="append", type=Path, default=[],
                         help="Intersect additional board requirements; may be repeated")
-    parser.add_argument("--describe", action="store_true", help="Validate descriptors only; print their identity and file list")
-    parser.add_argument("--module-order", type=Path, help="Validate explicit load destinations with --describe")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--describe", action="store_true", help="Validate descriptors only; print their identity and file list")
+    modes.add_argument("--prepare", action="store_true", help="Write an immutable selection description for GN")
+    parser.add_argument("--module-order", type=Path, help="Explicit module load destinations")
+    parser.add_argument("--selection", type=Path, help="Revalidate the prepared GN description before staging")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--allow-empty-output", action="store_true", help="Accept the expected empty output-parent hierarchy precreated by the build tool")
     args = parser.parse_args(argv)
     if not args.describe and args.output is None:
         parser.error("--output is required when staging")
-    if args.module_order is not None and not args.describe:
-        parser.error("--module-order is only supported with --describe")
+    if args.module_order is not None and not (args.describe or args.prepare or args.selection):
+        parser.error("--module-order requires --describe, --prepare or --selection")
+    if args.selection is not None and (args.describe or args.prepare):
+        parser.error("--selection is only used when staging")
     try:
         if args.describe:
             report = describe(args.manifest, args.requirements, args.module_order, args.additional_requirements)
+        elif args.prepare:
+            report = prepare(args.manifest, args.requirements, args.module_order, args.output,
+                             args.additional_requirements)
         else:
             report = stage(args.manifest, args.requirements, args.output,
                            allow_empty_output=args.allow_empty_output,
-                           additional_requirements=args.additional_requirements)
+                           additional_requirements=args.additional_requirements,
+                           selection_path=args.selection, module_order_path=args.module_order)
     except (StageError, OSError) as error:
         print(f"stage_kernel: {error}", file=sys.stderr)
         return 1

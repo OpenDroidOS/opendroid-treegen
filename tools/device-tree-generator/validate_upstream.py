@@ -111,6 +111,9 @@ def validate(source, output, reports=None):
         expected_board = str(root / f"device/board/{company}/{data['board']}")
         if device_info["board_path"] != expected_board:
             raise generate.InputError("Native hb resolved an unexpected board path")
+        compiler = product_util.ProductUtil.get_compiler(expected_board)
+        if compiler != "clang":
+            raise generate.InputError("Native hb did not discover the board's clang toolchain")
         dirs = SimpleNamespace(
             source_root_dir=str(root), built_in_product_dir=str(root / "productdefine/common/products"),
             built_in_base_dir=str(base.parent), vendor_dir=str(root / "vendor"), device_dir=str(root / "device"),
@@ -141,13 +144,21 @@ def validate(source, output, reports=None):
         if parsed._build_vars.get("enable_ramdisk") != (data["init_mode"] == "two-stage"):
             raise generate.InputError("Native preloader lost the declared init/ramdisk mode")
         if data.get("system_profile") == "tablet":
-            for part in ("multimodalinput:input", "arkui:ace_engine", "graphic:graphic_surface"):
+            for part in ("multimodalinput:input", "arkui:ace_engine", "graphic:graphic_surface",
+                         "ability:idl_tool", "arkcompiler:taihe_ffi_gen", "sdk:sdk"):
                 if part not in parsed._parts:
                     raise generate.InputError(f"Tablet inheritance lost required userspace part {part}")
+            for part in ("thirdparty:eudev", "thirdparty:libsnd"):
+                if part in parsed._parts:
+                    raise generate.InputError(f"Tablet inheritance retained an unavailable component: {part}")
+            features = parsed._parts["security:access_token"].get("features", {})
+            if features != {"access_token_enhance_capability": False}:
+                raise generate.InputError("Tablet access-token feature differs from the native component declaration")
         return {
             "result": "pass", "scope": "Actual Product and BundlePartObj parsing in isolated fixture",
             "source_profile": profile["id"], "parts_selected": len(parsed._parts),
             "native_product_discovery": "pass", "native_board_resolution": device_info["board_path"].replace(str(root) + "/", ""),
+            "native_board_compiler": compiler,
             "enable_ramdisk": parsed._build_vars["enable_ramdisk"],
             "required_fstab_install_destinations": required_fstab_destination(source, data),
             "components": results, "warnings": warnings,

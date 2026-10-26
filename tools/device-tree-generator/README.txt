@@ -23,6 +23,9 @@ soc_company,soc: shared SoC namespace and family.
 target_cpu: arm or arm64.
 source_profile: weekly_20261026.
 system_profile: base or tablet component selection.
+Tablet products inherit vendor/opendroid/common/tablet.json after the upstream
+tablet list. It selects IDL, Taihe, SDK and HAP build components, excludes the
+unavailable eudev/libsnd entries and corrects access_token_enhance_capability.
 init_mode: single-stage or two-stage; controls enable_ramdisk in the product.
 native_config: hardware key, firmware directory, mounts, device permissions
 and ext4 image budgets. Fields and types are shown in the example.

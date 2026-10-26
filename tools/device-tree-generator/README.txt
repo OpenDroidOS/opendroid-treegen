@@ -50,6 +50,7 @@ OUTPUT
 device/board/<company>/<board>: board configuration and native install targets.
 device/soc/<soc_company>/<soc>: shared build settings and kernel requirements.
 kernel/<company>/<board>: private prebuilt selection and staging targets.
+Its private/ directory is ignored by Git for local payloads and selections.
 vendor/<company>/<product>: product component selection and parameters.
 vendor/opendroid/common: shared configuration and staging helper.
 

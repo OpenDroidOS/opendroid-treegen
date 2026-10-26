@@ -78,6 +78,7 @@ board_fpu = "{'neon-fp-armv8' if data['target_cpu'] == 'arm64' else 'neon'}"
             "format_version": 1, "required_options": options,
         }),
         f"{kernel_path}/prebuilts.json": encoded({"format_version": 1, "state": "unselected", "files": []}),
+        f"{kernel_path}/.gitignore": "private/\n",
         f"{kernel_path}/module-order.json": encoded({"format_version": 1, "modules": data.get("module_load_order", [])}),
         f"{kernel_path}/BUILD.gn": header + f'''import("//build/ohos.gni")
 
@@ -141,10 +142,16 @@ action("kernel") {{
   }}
 }}
 
-_module_targets = []
-_module_index = 0
+_module_files = []
 foreach(item, _selection.files) {{
   if (item.role == "module") {{
+    _module_files += [ item ]
+  }}
+}}
+_module_targets = []
+if (_module_files != []) {{
+  _module_index = 0
+  foreach(item, _module_files) {{
     _name = "module_${{_module_index}}"
     _module_targets += [ ":$_name" ]
     _module_index += 1
@@ -247,6 +254,9 @@ group("common") {
         board_path: f"# {board}\n\nOpenHarmony board configuration. Imports `{soc_path}` and uses `{kernel_path}` for prebuilt kernel and module integration.\n",
         soc_path: f"# {soc}\n\nShared {data['target_cpu']} build settings and Linux kernel requirements for OpenHarmony.\n",
         kernel_path: f'''# {board} kernel integration
+
+Keep local manifests, payloads and prepared selections under `private/`, which
+is ignored by Git. Paths outside the repository are also accepted.
 
 Prepare a private GN selection from the source root:
 

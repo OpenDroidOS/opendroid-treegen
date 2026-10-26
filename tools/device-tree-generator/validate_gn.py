@@ -169,6 +169,7 @@ template("ohos_copy") {
             selection_index += 1
             stage_kernel.prepare(manifest, requirements_path, module_order, description, additional)
             run([str(gn), "gen", "out", "--args=opendroid_kernel_selection=" + json.dumps(str(description))])
+            return description
 
         select()
         run(["ninja", "-C", "out", "all"])
@@ -222,6 +223,17 @@ template("ohos_copy") {
         if (params / "opendroid.para").read_bytes() != (root / layout["common"] / "opendroid.para").read_bytes():
             raise generate.InputError("Shared parameter copy differs")
         native_validation = check_native_installation(root, data, layout, private, entries)
+        entries = [item for item in entries if item["role"] in ("kernel", "config")]
+        module_order.write_text(generate.json_text({"format_version": 1, "modules": []}))
+        description = select()
+        run(["ninja", "-C", "out", "kernel", "modules"])
+        stage = root / "out/opendroid-prebuilts" / data["board"] / generate.read_json(description)["id"]
+        for entry in entries:
+            if (stage / entry["destination"]).read_bytes() != (private / entry["path"]).read_bytes():
+                raise generate.InputError("Kernel/config-only staging differs from the selected payloads")
+        targets = run([str(gn), "ls", "out", f"//{layout['kernel']}:*"]).stdout.splitlines()
+        if set(targets) != {f"//{layout['kernel']}:kernel", f"//{layout['kernel']}:modules"}:
+            raise generate.InputError("Kernel/config-only graph retained module install targets")
     return {
         "result": "pass", "gn_version": subprocess.check_output([str(gn), "--version"], text=True).strip(),
         "gn_sha256": hashlib.sha256(gn.read_bytes()).hexdigest(), "scope": "Isolated generated GN/Ninja host fixture",
@@ -229,6 +241,7 @@ template("ohos_copy") {
         "changed_selection": "new content-addressed output; previous stage preserved",
         "board_requirement_dependency": "Stale selection rejected; explicit preparation creates a new stage" if additional else "no board descriptor",
         "module_order_dependency": "Stale selection rejected; explicit preparation creates a new stage",
+        "kernel_config_only": "GN/Ninja pass without module install targets",
         "exec_script_allowlist": "Empty; no GN-time scripts permitted",
         "parameter_targets": "invocations checked with stand-in ohos_prebuilt_etc; copied bytes verified",
         "native_configuration": native_validation,

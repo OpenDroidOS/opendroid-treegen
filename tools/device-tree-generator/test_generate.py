@@ -23,13 +23,13 @@ import generate
 class GeneratorTests(unittest.TestCase):
     def setUp(self):
         self.data = generate.read_json(Path(__file__).parent / "examples/native-arm64.json")
-        self.profile = generate.validate_input(self.data)
+        generate.validate_input(self.data)
 
     def test_path_injection_and_unsupported_claims(self):
         for key, value in (("company", "../escape"), ("board", 'bad"name'),
                            ("product", "../../out"), ("schema_version", True),
                            ("product", "common"), ("soc", "../bad"), ("soc_company", "qcom/bad"),
-                           ("source_profile", "other-weekly"), ("target_cpu", "auto"),
+                           ("source_profile", True), ("target_cpu", "auto"),
                            ("providers", {"display_gpu": "supported"}),
                            ("system_profile", "android"),
                            ("init_mode", "android"), ("init_mode", True),
@@ -45,7 +45,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_init_modes_control_ramdisk_and_keep_board_requirements_out_of_common_soc(self):
         data = copy.deepcopy(self.data)
-        files, reports = generate.render(data, self.profile, {}, generate.evidence.load_extractions([]))
+        files, reports = generate.render(data, {}, generate.evidence.load_extractions([]))
         config = generate.json.loads(files["vendor/opendroid/opendroid_demo/config.json"])
         self.assertIs(config["enable_ramdisk"], True)
         board = generate.json.loads(files["kernel/opendroid/demo_board/requirements.json"])["required_options"]
@@ -57,12 +57,12 @@ class GeneratorTests(unittest.TestCase):
         report = generate.json.loads(reports["support-report.json"])
         self.assertEqual(next(g for g in report["gaps"] if g["id"] == "first_stage")["state"], "declared-unvalidated")
         data["native_config"].pop("mounts")
-        files, reports = generate.render(data, self.profile, {}, generate.evidence.load_extractions([]))
+        files, reports = generate.render(data, {}, generate.evidence.load_extractions([]))
         self.assertNotIn("CONFIG_EXT4_FS", generate.json.loads(files["kernel/opendroid/demo_board/requirements.json"])["required_options"])
         report = generate.json.loads(reports["support-report.json"])
         self.assertEqual(next(g for g in report["gaps"] if g["id"] == "first_stage")["state"], "unresolved")
         data["init_mode"] = "single-stage"
-        files, _ = generate.render(data, self.profile, {}, generate.evidence.load_extractions([]))
+        files, _ = generate.render(data, {}, generate.evidence.load_extractions([]))
         self.assertIs(generate.json.loads(files["vendor/opendroid/opendroid_demo/config.json"])["enable_ramdisk"], False)
         self.assertNotIn("kernel/opendroid/demo_board/requirements.json", files)
 
@@ -77,7 +77,7 @@ class GeneratorTests(unittest.TestCase):
             generate.validate_input(data)
 
     def test_generated_source_has_only_build_configuration_and_legal_metadata(self):
-        files, _ = generate.render(self.data, self.profile, {}, generate.evidence.load_extractions([]))
+        files, _ = generate.render(self.data, {}, generate.evidence.load_extractions([]))
         for path, text in files.items():
             with self.subTest(path=path):
                 self.assertNotIn("Inspected source profile", text)
@@ -100,8 +100,8 @@ class GeneratorTests(unittest.TestCase):
     def test_oem_paths_do_not_move_distribution_common_code(self):
         data = copy.deepcopy(self.data)
         data.update(company="lenovo", board="malbec", product="malbec")
-        profile = generate.validate_input(data)
-        files, reports = generate.render(data, profile, {}, generate.evidence.load_extractions([]))
+        generate.validate_input(data)
+        files, reports = generate.render(data, {}, generate.evidence.load_extractions([]))
         self.assertIn("device/board/lenovo/malbec/BUILD.gn", files)
         self.assertIn("kernel/lenovo/malbec/BUILD.gn", files)
         config = generate.json.loads(files["vendor/lenovo/malbec/config.json"])
@@ -109,12 +109,28 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn("vendor/opendroid/common/scripts/stage_kernel.py", files)
         self.assertFalse(any(name.startswith("vendor/lenovo/common/") for name in files))
 
-    def test_source_drift_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "contract").write_text("changed")
-            with self.assertRaises(generate.InputError):
-                generate.verify_source(root, {"contract_files_sha256": {"contract": "0" * 64}})
+    def test_legacy_profile_is_optional_and_removed_from_reports(self):
+        for legacy in (None, "other-weekly"):
+            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "source"
+                source.mkdir()
+                data = copy.deepcopy(self.data)
+                if legacy is not None:
+                    data["source_profile"] = legacy
+                path = root / "input.json"
+                path.write_text(generate.json_text(data))
+                with patch.object(generate, "verify_source", return_value={"checks": []}):
+                    generate.generate(path, root / "tree", source, reports=root / "reports")
+                normalized = generate.read_json(root / "reports/porting-input.json")
+                self.assertNotIn("source_profile", normalized)
+                report = generate.read_json(root / "reports/support-report.json")
+                self.assertNotIn("source_profile", report)
+                self.assertEqual(report["source_inspection"], "source-inspection.json")
+                manifest = generate.read_json(root / "reports/generation-manifest.json")
+                self.assertNotIn("profile_sha256", manifest)
+                self.assertIn("source_inspector_sha256", manifest)
+                generate.check(root / "tree", root / "reports")
 
     def test_output_preservation_and_edit_detection(self):
         with tempfile.TemporaryDirectory() as tmp:

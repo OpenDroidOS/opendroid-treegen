@@ -209,27 +209,33 @@ group("common") {
                 "ace_js2bundle", "ace_ets2bundle", "global_resource_tool", "packing_tool"
             )]},
             {"subsystem": "sdk", "components": [{"component": "sdk"}]},
-            {"subsystem": "hdf", "components": [{"component": "drivers_interface_memorytracker"}]},
+            {"subsystem": "hdf", "components": [{"component": name} for name in (
+                "drivers_interface_memorytracker", "drivers_interface_partitionslot",
+                "drivers_peripheral_partitionslot", "drivers_interface_bluetooth",
+                "drivers_interface_distributed_audio", "drivers_tools"
+            )]},
             {"subsystem": "multimedia", "components": [{"component": "ringtone_library"}]},
             {"subsystem": "graphic", "components": [{"component": "graphics_effect"}]},
-            {"subsystem": "telephony", "components": [{"component": "telephony_data"}]},
-            {"subsystem": "thirdparty", "components": [
-                {"component": "parse5"}, {"component": "weex-loader"},
-                {"component": "xmp_toolkit_sdk"},
-                {"component": "typescript"},
-                {"component": "astc-encoder"},
-                {"component": "rust_libc"},
-                {"component": "optimized_routines"},
-                {"component": "lzma"},
-                {"component": "vulkan-loader"},
-                {"component": "abseil-cpp"},
-                {"component": "vma"},
-            ] + [
+            {"subsystem": "telephony", "components": [{"component": name} for name in (
+                "telephony_data", "core_service", "cellular_data", "call_manager", "state_registry"
+            )]},
+            {"subsystem": "tee", "components": [{"component": "tee_client"}]},
+            {"subsystem": "thirdparty", "components": [{"component": name} for name in (
+                "parse5", "weex-loader", "xmp_toolkit_sdk", "expat", "libdrm",
+                "typescript", "astc-encoder", "rust_libc", "optimized_routines",
+                "lzma", "vulkan-loader", "abseil-cpp", "vma", "FreeBSD", "dav1d",
+                "elfio", "freetype", "grpc", "harfbuzz", "iptables", "jerryscript",
+                "lame", "libexif", "libinput", "libphonenumber", "libvpx",
+                "meshoptimizer", "mtdev", "opencore-amr", "openmax", "opus", "re2",
+                "rust_cxx", "rust_bindgen", "vulkan-headers", "flatbuffers",
+                "vixl", "css-what", "opencl-headers"
+            )] + [
                 {"component": name, "exclude": "true"} for name in ("eudev", "libsnd")
             ]},
             {"subsystem": "security", "components": [{
                 "component": "access_token", "features": ["access_token_enhance_capability = false"]
-            }, {"component": "security_guard"}, {"component": "asset"}]},
+            }, {"component": "security_guard"}, {"component": "asset"},
+                {"component": "security_component_manager"}]},
         ]})
     if board_options:
         files[f"{kernel_path}/requirements.json"] = encoded({

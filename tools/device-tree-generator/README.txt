@@ -21,7 +21,6 @@ schema_version: 3.
 company,board,product: OEM namespace, board and product identifiers.
 soc_company,soc: shared SoC namespace and family.
 target_cpu: arm or arm64.
-source_profile: weekly_20261026.
 system_profile: base or tablet component selection.
 Tablet products inherit vendor/opendroid/common/tablet.json after the upstream
 tablet list. It selects IDL, Taihe, SDK and HAP build components, excludes the
@@ -38,8 +37,8 @@ Mounts marked required need two-stage init. They also install in ramdisk at
 /etc/fstab.required; other mounts stay in the vendor fstab. Kernel cmdline
 ohos.required_mount entries take precedence over the required-fstab file.
 Required mounts also need nofail: this native flag preserves mount errors.
-The pinned early-init code checks negative returns; positive errno paths still
-need error-handling integration before mount failures reliably abort startup.
+Verify that the selected startup implementation propagates mount and root-switch
+failures before relying on two-stage boot.
 Two-stage root switching needs a required system mount at /usr. Its storage
 drivers, filesystem support and early firmware must be available before vendor
 modules or second-stage init jobs run.
@@ -56,6 +55,8 @@ vendor/opendroid/common: shared configuration and staging helper.
 
 Reports are written separately. Output directories must be new and outside
 the source checkout and extraction directories. Existing files are preserved.
+source-inspection.json records inspected source declarations and observed hashes.
+Those hashes identify the inputs; they do not restrict generation to a snapshot.
 
 PREBUILT SELECTION
 -----------------
@@ -92,6 +93,15 @@ INITRAMFS_FORCE disabled.
 
 CHECKS
 ------
+Generation inspects product inheritance, selected component and feature names,
+Python API declarations, GN templates and requested native init/fstab commands.
+It reads the checkout without importing or executing its code. Missing required
+interfaces fail before output is created. Declaration checks do not establish
+GN dependency closure, compilation or hardware compatibility.
+
+Legacy inputs may retain source_profile as a string. It is ignored and omitted
+from normalized reports. No weekly profile is required.
+
 python3 -B tools/device-tree-generator/generate.py check /path/to/tree \
   --reports /path/to/reports
 
@@ -103,7 +113,8 @@ python3 -B tools/device-tree-generator/validate_gn.py \
 
 python3 -B -m unittest discover -s tools/device-tree-generator
 
-validate_upstream uses OpenHarmony product parsers. validate_gn uses an
+validate_upstream explicitly executes OpenHarmony product parsers from the
+selected checkout in a fixture. validate_gn uses an
 isolated GN/Ninja fixture with synthetic inputs and stand-in install templates.
 
 Copyright2026OpenDroidOS. Apache-2.0; see LICENSE and NOTICE.

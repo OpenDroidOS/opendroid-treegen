@@ -296,33 +296,13 @@ Modules install at `/vendor/lib/opendroid/<destination>`. `module-order.json`
 lists their init load order; module dependencies and ABI need a matching set.
 ''',
         product_path: f"# {product}\n\nOpenHarmony {data.get('system_profile', 'base')} product configuration for `{board_path}`. Inherits `vendor/opendroid/common` and installs product parameters.\n",
-        common_path: """# OpenDroid common configuration
-
-Shared OpenHarmony product components, distribution parameters and prebuilt staging tools.
-
-`scripts/stage_kernel.py --prepare` writes a machine-specific GN selection file
-for the work area. Set `opendroid_kernel_selection` to that file. Staging rechecks
-descriptors, selected file hashes and kernel configuration before publishing outputs.
-
-`product-features.json` defines typed Boolean `product_features` choices.
-`safwk_run_on_demand_qos` defaults to false; true enables SAFWK's run-on-demand
-start QoS priority adjustment. `hitrace_executable` defaults to true; true builds
-Hitrace command-line tools when `support_jsapi` is enabled, while false omits them.
-For example, use `{"product_features": {"safwk_run_on_demand_qos": true, "hitrace_executable": false}}`
-in the device input. Omitted choices use these shared defaults. Choices require
-their native component to be selected and do not establish provider or hardware
-support. If a shared default would replace additional inherited feature
-assignments or component metadata, generation requires an explicit choice for
-that component; the override preserves that data.
-""",
+        common_path: (Path(__file__).parent / "templates/common/README.md").read_text(encoding="utf-8"),
     }
     if data.get("native_config"):
         native = data["native_config"]
         descriptions[board_path] += f"\nInit hardware key: `{native['hardware']}`.\n"
         if native.get("firmware_directory"):
             descriptions[board_path] += f"Firmware search path: `{native['firmware_directory']}`.\n"
-    if data.get("system_profile") == "tablet":
-        descriptions[common_path] += "\nTablet products inherit `tablet.json` after `productdefine/common/inherit/tablet.json`.\n"
     descriptions[board_path] += f"\nInit mode: `{data['init_mode']}`.\n"
     if board_options:
         descriptions[kernel_path] += "\n`requirements.json` adds the board's built-in ramdisk and first-stage filesystem requirements to the shared SoC requirements.\n"
@@ -333,4 +313,5 @@ that component; the override preserves that data.
     runtime = Path(__file__).parent / "runtime/stage_kernel.py"
     files[f"{common_path}/scripts/stage_kernel.py"] = runtime.read_text(encoding="utf-8")
     files[f"{common_path}/product-features.json"] = Path(product_features.CATALOG_PATH).read_text(encoding="utf-8")
+    files[f"{common_path}/docs/configuration.md"] = (Path(__file__).parent / "templates/common/configuration.md").read_text(encoding="utf-8")
     return files

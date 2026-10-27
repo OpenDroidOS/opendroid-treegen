@@ -265,21 +265,26 @@ group("common") {
         soc_path: f"# {soc}\n\nShared {data['target_cpu']} build settings and Linux kernel requirements for OpenHarmony.\n",
         kernel_path: f'''# {board} kernel integration
 
-Keep local manifests, payloads and prepared selections under `private/`, which
-is ignored by Git. Paths outside the repository are also accepted.
+Track a prebuilt payload under `prebuilt/` only when its redistribution terms
+allow it, and include its license and source attribution. Local or restricted
+payloads and their manifests belong in a work directory outside the source
+checkout. Keep prepared machine-specific selections outside the checkout too.
 
-Prepare a private GN selection from the source root:
+Prepare a GN selection from the source root. Use the checked-in manifest for
+tracked prebuilt files or a separate work-area manifest for local inputs:
 
 ```sh
 python3 vendor/opendroid/common/scripts/stage_kernel.py --prepare \\
-  --manifest /path/to/private/prebuilts.json \\
+  --manifest {kernel_path}/prebuilts.json \\
   --requirements {soc_path}/kernel/requirements.json \\
 {board_requirement_argument}  --module-order {kernel_path}/module-order.json \\
-  --output /path/to/private/selection.json
+  --output /path/to/work/kernel-selection.json
 ```
 
-Set `opendroid_kernel_selection` to the prepared file. Use a new output path
-when the manifest, requirements, module order or source paths change.
+Set `opendroid_kernel_selection` to that prepared file. Keep origin and
+selection records in the work area, not in the source repository. Re-run
+preparation when the manifest, requirements, module order or source paths
+change.
 
 The input manifest has `format_version: 1`, `state: selected`, and `files`
 entries with `role`, `path`, `sha256`, `destination`. Paths are relative to the
@@ -295,9 +300,9 @@ lists their init load order; module dependencies and ABI need a matching set.
 
 Shared OpenHarmony product components, distribution parameters and prebuilt staging tools.
 
-`scripts/stage_kernel.py --prepare` writes a private GN selection description. Set
-`opendroid_kernel_selection` to that file. Staging rechecks descriptors, selected
-file hashes and kernel configuration before publishing outputs.
+`scripts/stage_kernel.py --prepare` writes a machine-specific GN selection file
+for the work area. Set `opendroid_kernel_selection` to that file. Staging rechecks
+descriptors, selected file hashes and kernel configuration before publishing outputs.
 
 `product-features.json` defines typed Boolean `product_features` choices.
 `safwk_run_on_demand_qos` defaults to false; true enables SAFWK's run-on-demand

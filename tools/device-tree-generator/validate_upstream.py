@@ -52,8 +52,10 @@ def validate(source, output, reports=None):
     reports = generate.report_root(output, reports)
     data = generate.read_json(reports / "porting-input.json")
     generate.validate_input(data)
-    inspection = generate.verify_source(source, data)
     generate.check(output, reports)
+    manifest = generate.read_json(reports / "generation-manifest.json")
+    output_scope = manifest.get("output_scope", "bootstrap-platform")
+    inspection = generate.verify_source(source, data, output_scope == "bootstrap-platform")
 
     # Fail if an imported parser attempts to write the owner's source tree.
     def audit(event, args):
@@ -78,7 +80,29 @@ def validate(source, output, reports=None):
     with tempfile.TemporaryDirectory(prefix=".parser-fixture-", dir=output.parent) as temporary:
         root = Path(temporary)
         for name in ("device", "vendor", "kernel"):
-            shutil.copytree(output / name, root / name)
+            if (output / name).is_dir():
+                shutil.copytree(output / name, root / name)
+        # Board/product scope deliberately reuses source-provided platform and
+        # common files. Copy only the text interfaces needed by native parsers.
+        if output_scope == "board-product":
+            shared = [
+                f"device/soc/{data['soc_company']}/{data['soc']}/config.gni",
+                f"device/soc/{data['soc_company']}/{data['soc']}/kernel/requirements.json",
+                "vendor/opendroid/common/base.json",
+                "vendor/opendroid/common/tablet.json",
+                "vendor/opendroid/common/BUILD.gn",
+                "vendor/opendroid/common/opendroid.para",
+                "vendor/opendroid/common/product-features.json",
+            ]
+            board_kernel = f"kernel/{data['company']}/{data['board']}"
+            shared.extend(f"{board_kernel}/{name}" for name in
+                          ("BUILD.gn", "requirements.json", "module-order.json", "prebuilts.json"))
+            for relative in shared:
+                source_file = source / relative
+                if source_file.is_file():
+                    target = root / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source_file, target)
         base = root / data["base_product"]
         base.parent.mkdir(parents=True)
         shutil.copyfile(source / data["base_product"], base)
@@ -122,7 +146,8 @@ def validate(source, output, reports=None):
         parsed = Product(dirs, fixture_config)
         native_features = product_util.ProductUtil.get_features_dict(fixture_config.product_json)
         for option, item in product_features.CATALOG.items():
-            expected = data.get("product_features", {}).get(option, item["default"])
+            expected = data.get("product_features", {}).get(
+                option, inspection["product_feature_defaults"][option])
             if native_features.get(item["feature"]) is not expected:
                 raise generate.InputError(
                     f"Native ProductUtil feature differs for {option}: "

@@ -1,0 +1,18 @@
+OpenDroidOS extractor
+Copyright 2026 OpenDroidOS
+
+Original tool code, tests and documentation are licensed under Apache-2.0.
+See LICENSE.
+
+This tool supports OpenHarmony porting. OpenHarmony's source, build framework,
+hardware interfaces and documentation retain their original authors and terms.
+https://github.com/openharmony/docs
+
+third_party/aosp/unpack_bootimg.py is unchanged AOSP source:
+Copyright 2018, The Android Open Source Project
+Apache License, Version 2.0; see third_party/aosp/LICENSE and UPSTREAM.json.
+Its output functions are intercepted; our bounded writers handle extraction.
+
+AOSP boot/DTBO/sparse and Linux initramfs format documentation informed the tool.
+Host tools and extracted inputs retain their own licenses. This notice does not
+grant redistribution rights for input images, firmware or extracted binaries.

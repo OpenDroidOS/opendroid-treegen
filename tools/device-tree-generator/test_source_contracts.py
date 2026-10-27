@@ -101,20 +101,19 @@ def gen_install_dests(system_base_dir, ramdisk_base_dir, vendor_base_dir, update
         self.assertIn(("a", "direct"), selected)
         self.assertNotIn(("a", "nested"), selected)
 
-    def test_common_default_rejects_unmanaged_assignment_but_explicit_choice_preserves_it(self):
+    def test_common_default_is_not_reemitted_and_explicit_choice_preserves_unmanaged_assignments(self):
         catalog = {"trace": {"subsystem": "hiviewdfx", "component": "hitrace",
                              "feature": "trace_enabled", "default": False}}
         upstream = {("hiviewdfx", "hitrace"): {
             "component": "hitrace", "features": ["trace_enabled = false", "local_diagnostic = true",
                                                     "local_count = 7", 'local_name = "native"']}}
-        with self.assertRaisesRegex(source_contracts.ContractError, "local_diagnostic.*explicit product_features"):
-            source_contracts._product_feature_components(upstream, catalog, {})
+        self.assertEqual(source_contracts._product_feature_components(upstream, catalog, {}), [])
         result = source_contracts._product_feature_components(upstream, catalog, {"trace": True})
         self.assertEqual(result[0]["components"][0]["features"],
                          ['local_count = 7', 'local_diagnostic = true', 'local_name = "native"',
                           "trace_enabled = true"])
 
-    def test_common_default_rejects_inherited_metadata_but_explicit_choice_preserves_it(self):
+    def test_common_default_is_not_reemitted_and_explicit_choice_preserves_metadata(self):
         catalog = {"trace": {"subsystem": "hiviewdfx", "component": "hitrace",
                              "feature": "trace_enabled", "default": False}}
         upstream = {("hiviewdfx", "hitrace"): {
@@ -122,12 +121,53 @@ def gen_install_dests(system_base_dir, ramdisk_base_dir, vendor_base_dir, update
             "syscap": ["SystemCapability.HiviewDFX.HiTrace"],
             "exclusions": ["module = diagnostic_stub"],
         }}
-        with self.assertRaisesRegex(source_contracts.ContractError, "exclusions.*syscap.*explicit product_features"):
-            source_contracts._product_feature_components(upstream, catalog, {})
+        self.assertEqual(source_contracts._product_feature_components(upstream, catalog, {}), [])
         component = source_contracts._product_feature_components(
             upstream, catalog, {"trace": True})[0]["components"][0]
         self.assertEqual(component["syscap"], upstream[("hiviewdfx", "hitrace")]["syscap"])
         self.assertEqual(component["exclusions"], upstream[("hiviewdfx", "hitrace")]["exclusions"])
+
+    def test_bootstrap_common_replacement_fails_closed_or_preserves_native_entry(self):
+        catalog = {"trace": {"subsystem": "hiviewdfx", "component": "hitrace",
+                             "feature": "trace_enabled", "default": False}}
+        identity = ("hiviewdfx", "hitrace")
+        upstream = {identity: {
+            "component": "hitrace", "features": ["trace_enabled = false", "local_debug = true"],
+            "syscap": ["SystemCapability.HiviewDFX.HiTrace"],
+            "exclusions": ["module = diagnostic_stub"],
+        }}
+        generated_default = {identity: {"component": "hitrace", "features": ["trace_enabled = false"]}}
+        with self.assertRaisesRegex(source_contracts.ContractError, "explicit product_features choice"):
+            source_contracts._product_feature_components(
+                upstream, catalog, {}, generated_default, bootstrap_common=True)
+
+        # The common component is allowed to set the catalog-managed feature
+        # to its own default; formatting around an assignment is immaterial.
+        managed_default = {identity: {"component": "hitrace", "features": ["trace_enabled=true"]}}
+        self.assertEqual(source_contracts._product_feature_components(
+            {identity: {"component": "hitrace", "features": ["trace_enabled = false"]}},
+            catalog, {}, managed_default, bootstrap_common=True), [])
+        managed_spacing = {identity: {"component": "hitrace", "features": ["trace_enabled = false"]}}
+        self.assertEqual(source_contracts._product_feature_components(
+            {identity: {"component": "hitrace", "features": ["trace_enabled=false"]}},
+            catalog, {}, managed_spacing, bootstrap_common=True), [])
+
+        override = source_contracts._product_feature_components(
+            upstream, catalog, {"trace": True}, generated_default, bootstrap_common=True)[0]["components"][0]
+        self.assertEqual(override["features"], ["local_debug = true", "trace_enabled = true"])
+        self.assertEqual(override["syscap"], upstream[identity]["syscap"])
+        self.assertEqual(override["exclusions"], upstream[identity]["exclusions"])
+
+        # A source-provided common entry is the effective native component and
+        # remains authoritative in ordinary board/product generation.
+        native_common = {identity: {"component": "hitrace", "features": [
+            "trace_enabled = false", "provider_feature = true"], "syscap": ["native-common"]}}
+        self.assertEqual(source_contracts._product_feature_components(
+            upstream, catalog, {}, native_common), [])
+        source_override = source_contracts._product_feature_components(
+            upstream, catalog, {"trace": True}, native_common)[0]["components"][0]
+        self.assertEqual(source_override["features"], ["provider_feature = true", "trace_enabled = true"])
+        self.assertEqual(source_override["syscap"], ["native-common"])
 
     def test_catalog_component_must_exist_before_common_defaults(self):
         catalog = {"trace": {"subsystem": "hiviewdfx", "component": "hitrace",
@@ -145,6 +185,17 @@ def gen_install_dests(system_base_dir, ramdisk_base_dir, vendor_base_dir, update
 
     def test_missing_template_fails_before_creating_output(self):
         self.write("build/templates/cxx/prebuilt.gni", '# template("ohos_prebuilt_etc") {}\n')
+        self.write("device/soc/generic/generic_arm64/config.gni", "# fixture\n")
+        self.write("device/soc/generic/generic_arm64/kernel/requirements.json",
+                   generate.json.loads(generate.native_layout.render(self.data, "", "", "")
+                       ["device/soc/generic/generic_arm64/kernel/requirements.json"]))
+        for relative, value in (
+                ("vendor/opendroid/common/BUILD.gn", "# fixture\n"),
+                ("vendor/opendroid/common/base.json", {"subsystems": []}),
+                ("vendor/opendroid/common/opendroid.para", "# fixture\n"),
+                ("vendor/opendroid/common/product-features.json", []),
+                ("vendor/opendroid/common/scripts/stage_kernel.py", "# fixture\n")):
+            self.write(relative, value)
         input_path = Path(self.temporary.name) / "input.json"
         input_path.write_text(generate.json_text(self.data))
         output = Path(self.temporary.name) / "tree"
@@ -153,6 +204,19 @@ def gen_install_dests(system_base_dir, ramdisk_base_dir, vendor_base_dir, update
                 generate.generate(input_path, output, self.root)
         self.assertFalse(output.exists())
         self.assertFalse(output.with_name("tree-reports").exists())
+
+    def test_bootstrap_does_not_require_source_soc_or_common_templates(self):
+        input_path = Path(self.temporary.name) / "bootstrap-input.json"
+        input_path.write_text(generate.json_text(self.data))
+        output = Path(self.temporary.name) / "bootstrap-tree"
+        with patch.dict(generate.product_features.CATALOG, {}, clear=True):
+            generate.generate(input_path, output, self.root, bootstrap_platform=True)
+        self.assertTrue((output / "device/soc/generic/generic_arm64/config.gni").is_file())
+        self.assertTrue((output / "device/soc/generic/generic_arm64/kernel/requirements.json").is_file())
+        self.assertTrue((output / "vendor/opendroid/common/base.json").is_file())
+        self.assertTrue((output / "kernel/opendroid/demo_board/BUILD.gn").is_file())
+        self.assertFalse((self.root / "device/soc/generic/generic_arm64/config.gni").exists())
+        self.assertFalse((self.root / "vendor/opendroid/common/base.json").exists())
 
     def test_python_interface_rename_and_parameter_change_are_rejected(self):
         path = "build/hb/util/product_util.py"

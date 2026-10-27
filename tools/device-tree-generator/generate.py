@@ -134,14 +134,91 @@ def validate_input(data):
         raise InputError("notes must be a list of strings")
 
 
-def verify_source(root, data):
-    generated = native_layout.render(data, "", "", "")
-    selections = [json.loads(generated["vendor/opendroid/common/base.json"])]
-    if data.get("system_profile") == "tablet":
-        selections.append(json.loads(generated["vendor/opendroid/common/tablet.json"]))
+def _source_json(root, relative):
+    path = root / relative
+    if not path.resolve().is_relative_to(root) or not path.is_file():
+        raise InputError(f"Required source-provided interface is absent: {relative}")
     try:
-        return source_contracts.inspect(root, data, selections, product_features.CATALOG,
-                                        data.get("product_features", {}))
+        return read_json(path)
+    except (OSError, ValueError) as error:
+        raise InputError(f"Invalid source-provided JSON {relative}: {error}") from error
+
+
+def _requirements_match(actual_data, expected_options, path, description):
+    if (not isinstance(actual_data, dict) or
+            set(actual_data) - {"format_version", "required_options", "scope", "module_values"} or
+            type(actual_data.get("format_version")) is not int or actual_data["format_version"] != 1 or
+            any(name in actual_data and not isinstance(actual_data[name], str)
+                for name in ("scope", "module_values"))):
+        raise InputError(f"Invalid source {description} requirements: {path}")
+    actual_options = actual_data.get("required_options") if isinstance(actual_data, dict) else None
+    if not isinstance(actual_options, dict):
+        raise InputError(f"Invalid source {description} requirements: {path}:required_options")
+    for option, allowed_values in actual_options.items():
+        if (not isinstance(option, str) or not re.fullmatch(r"CONFIG_[A-Za-z0-9_]+", option) or
+                not isinstance(allowed_values, list) or not allowed_values or
+                any(not isinstance(value, str) or value not in ("y", "m", "n") for value in allowed_values) or
+                len(allowed_values) != len(set(allowed_values))):
+            raise InputError(f"Invalid source {description} requirement: {path}:{option}")
+    for option, allowed in expected_options.items():
+        actual = actual_options.get(option)
+        if not isinstance(actual, list) or not actual or not set(actual).issubset(set(allowed)):
+            raise InputError(f"Source {description} requirement {path}:{option} conflicts with requested contract")
+
+
+def verify_source(root, data, bootstrap_platform=False):
+    root = root.resolve()
+    kernel_path = f"kernel/{data['company']}/{data['board']}"
+    bootstrap = native_layout.render(data, "", "", "")
+    try:
+        if bootstrap_platform:
+            common_path = "vendor/opendroid/common/base.json"
+            common_selections = [json.loads(bootstrap[common_path])]
+            if data.get("system_profile") == "tablet":
+                common_selections.append(json.loads(bootstrap["vendor/opendroid/common/tablet.json"]))
+            platform = {"kernel_scaffold": "bootstrap-template", "kernel_path": kernel_path}
+            result = source_contracts.inspect(root, data, common_selections, product_features.CATALOG,
+                                              data.get("product_features", {}), bootstrap_common=True)
+            result["source_platform"] = platform
+            return result
+        for relative in ("device/soc/%s/%s/config.gni" % (data["soc_company"], data["soc"]),
+                         "device/soc/%s/%s/kernel/requirements.json" % (data["soc_company"], data["soc"]),
+                         "vendor/opendroid/common/BUILD.gn", "vendor/opendroid/common/base.json",
+                         "vendor/opendroid/common/opendroid.para",
+                         "vendor/opendroid/common/product-features.json",
+                         "vendor/opendroid/common/scripts/stage_kernel.py"):
+            path = root / relative
+            if not path.resolve().is_relative_to(root) or not path.is_file():
+                raise InputError(f"Required source-provided interface is absent: {relative}")
+        kernel_dir = root / kernel_path
+        platform = {"kernel_scaffold": "present" if (kernel_dir / "BUILD.gn").is_file() else "missing",
+                    "kernel_path": kernel_path}
+        requirements_path = kernel_dir / "requirements.json"
+        order_path = kernel_dir / "module-order.json"
+        shared_path = f"device/soc/{data['soc_company']}/{data['soc']}/kernel/requirements.json"
+        expected_shared = json.loads(bootstrap[shared_path])["required_options"]
+        _requirements_match(_source_json(root, shared_path), expected_shared, shared_path, "SoC")
+        if requirements_path.is_file():
+            expected_board_path = f"{kernel_path}/requirements.json"
+            expected_board = json.loads(bootstrap[expected_board_path]).get("required_options", {})
+            _requirements_match(_source_json(root, expected_board_path), expected_board,
+                                expected_board_path, "board")
+            platform["board_requirements"] = "present-and-compatible"
+        else:
+            platform["board_requirements"] = "missing" if data["init_mode"] == "two-stage" else "not-required-by-input"
+        if data.get("module_load_order"):
+            if not order_path.is_file():
+                platform["module_order"] = "missing"
+            else:
+                actual_order = _source_json(root, f"{kernel_path}/module-order.json")
+                requested_order = {"format_version": 1, "modules": data["module_load_order"]}
+                if actual_order != requested_order:
+                    raise InputError(f"Source module order {kernel_path}/module-order.json conflicts with input module_load_order")
+                platform["module_order"] = "present-and-matching"
+        result = source_contracts.inspect(root, data, None, product_features.CATALOG,
+                                          data.get("product_features", {}))
+        result["source_platform"] = platform
+        return result
     except source_contracts.ContractError as error:
         raise InputError(str(error)) from error
 
@@ -195,7 +272,7 @@ def support_markdown(report, prebuilts):
     return "\n".join(lines) + "\n"
 
 
-def render(data, contracts, prebuilts):
+def render(data, contracts, prebuilts, output_scope="bootstrap-platform"):
     company, board, product = (data[k] for k in ("company", "board", "product"))
     board_path = f"device/board/{company}/{board}"
     product_path = f"vendor/{company}/{product}"
@@ -216,8 +293,17 @@ def render(data, contracts, prebuilts):
     if data.get("system_profile") == "tablet":
         config["inherit"].insert(1, "productdefine/common/inherit/tablet.json")
         config["inherit"].append("vendor/opendroid/common/tablet.json")
+    platform = contracts.get("source_platform", {})
+    kernel_required = "Bind a compatible kernel/config/module/tree manifest; image/runtime integration remains open."
+    if platform.get("kernel_scaffold") == "missing":
+        kernel_required = (f"Source kernel integration `{platform.get('kernel_path', '')}` is absent. "
+                           "Add device-specific kernel integration separately or use --bootstrap-platform for a starter template.")
+    if platform.get("board_requirements") == "missing":
+        kernel_required += " Two-stage init also needs compatible board kernel requirements; the source file was not present."
+    if platform.get("module_order") == "missing":
+        kernel_required += " Requested module_load_order needs a source-provided module-order.json matching the input."
     gaps = [
-        {"id": "kernel", "state": "unresolved", "required": "Bind a compatible private kernel/config/module/tree manifest; staging and feature checks exist, image/runtime integration remains open."},
+        {"id": "kernel", "state": "unresolved", "required": kernel_required},
         {"id": "boot_packaging", "state": "unresolved", "required": "Implement the actual bootloader image/header/ramdisk/DTB/DTBO contract."},
         {"id": "partitions", "state": "unresolved", "required": "Supply evidenced partitions, filesystems, mount/init configuration, slots and verified-boot chain."},
         {"id": "recovery_updates", "state": "unresolved", "required": "Integrate updater/recovery, update metadata and rollback for this device."},
@@ -251,6 +337,7 @@ def render(data, contracts, prebuilts):
         "prebuilt_evidence": {"state": prebuilts["state"], "summary": prebuilts["summary"],
                              "warnings": prebuilts["warnings"], "selection": prebuilts["selection"],
                              "details": "prebuilt-evidence.json" if prebuilts["reports"] else None},
+        "output_scope": output_scope,
         "validation": {"json": "generated", "upstream_parsers": "not-run-by-generator",
                        "gn": "not-run", "build": "not-run", "device": "not-tested"},
     }
@@ -302,12 +389,12 @@ def report_root(output, reports=None):
     return output.with_name(output.name + "-reports")
 
 
-def generate(input_path, output, source_root, extracted=(), reports=None):
+def generate(input_path, output, source_root, extracted=(), reports=None, bootstrap_platform=False):
     data = read_json(input_path)
     validate_input(data)
     data.pop("source_profile", None)
     source_root = source_root.resolve()
-    contracts = verify_source(source_root, data)
+    contracts = verify_source(source_root, data, bootstrap_platform)
     output = output.absolute()
     reports = report_root(output, reports).absolute()
     if output.resolve().is_relative_to(reports.resolve()) or reports.resolve().is_relative_to(output.resolve()):
@@ -322,7 +409,18 @@ def generate(input_path, output, source_root, extracted=(), reports=None):
             if destination.resolve().is_relative_to(root.resolve()):
                 raise InputError("Generate outside extraction directories to preserve evidence inputs")
     prebuilts = evidence.load_extractions(extracted)
-    files, report_files = render(data, contracts, prebuilts)
+    output_scope = "bootstrap-platform" if bootstrap_platform else "board-product"
+    files, report_files = render(data, contracts, prebuilts, output_scope)
+    if not bootstrap_platform:
+        board_prefix = f"device/board/{data['company']}/{data['board']}/"
+        product_prefix = f"vendor/{data['company']}/{data['product']}/"
+        files = {name: content for name, content in files.items()
+                 if name.startswith(board_prefix) or name.startswith(product_prefix)}
+    manifest = read_json_from_text(report_files["generation-manifest.json"])
+    manifest["output_scope"] = output_scope
+    manifest["files"] = {name: digest(value.encode()) for name, value in sorted(files.items())}
+    manifest["executable_files"] = [name for name in manifest.get("executable_files", []) if name in files]
+    report_files["generation-manifest.json"] = json_text(manifest)
     for destination, content_files in ((output, files), (reports, report_files)):
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".oh-treegen-", dir=destination.parent) as temporary:
@@ -340,6 +438,10 @@ def generate(input_path, output, source_root, extracted=(), reports=None):
     return len(files) + len(report_files)
 
 
+def read_json_from_text(text):
+    return json.loads(text)
+
+
 def check(output, reports=None):
     reports = report_root(output, reports)
     if output.is_symlink() or reports.is_symlink():
@@ -350,6 +452,9 @@ def check(output, reports=None):
     manifest = read_json(manifest_path)
     if not isinstance(manifest, dict) or type(manifest.get("manifest_version")) is not int or manifest["manifest_version"] not in (1, 2):
         raise InputError("Unsupported generation manifest")
+    output_scope = manifest.get("output_scope", "bootstrap-platform")
+    if output_scope not in ("bootstrap-platform", "board-product"):
+        raise InputError("Unsupported output scope in generation manifest")
     count = check_entries(output, manifest.get("files"))
     executables = manifest.get("executable_files", [])
     if (not isinstance(executables, list) or
@@ -388,6 +493,8 @@ def main(argv=None):
     make.add_argument("--output", required=True, type=Path)
     make.add_argument("--source-root", required=True, type=Path)
     make.add_argument("--reports", type=Path, help="Separate report directory; default <output>-reports")
+    make.add_argument("--bootstrap-platform", action="store_true",
+                      help="also generate the existing SoC, kernel and shared-common starter templates")
     make.add_argument("--extracted", action="append", default=[], type=Path,
                       help="Extraction directory or report file; repeat for separate captures")
     verify = commands.add_parser("check", help="Check managed hashes and executable modes")
@@ -396,7 +503,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "generate":
-            count = generate(args.input, args.output, args.source_root, args.extracted, args.reports)
+            count = generate(args.input, args.output, args.source_root, args.extracted, args.reports,
+                             args.bootstrap_platform)
             print(f"Generated {count} files. Tree: {args.output}; reports: {report_root(args.output, args.reports)}. Build/hardware unverified.")
         else:
             count = check(args.output, args.reports)

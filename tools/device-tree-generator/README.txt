@@ -29,6 +29,16 @@ init_mode: single-stage or two-stage; controls enable_ramdisk in the product.
 native_config: hardware key, firmware directory, mounts, device permissions
 and ext4 image budgets. Fields and types are shown in the example.
 module_load_order: ordered module destinations from the private selection.
+product_features: optional object mapping IDs in
+`vendor/opendroid/common/product-features.json` to JSON Booleans. Omitted IDs
+use shared defaults. `safwk_run_on_demand_qos` defaults to false; true enables
+SAFWK's run-on-demand start QoS priority adjustment. `hitrace_executable`
+defaults to true; true builds Hitrace executable tools when `support_jsapi` is
+enabled. False disables those specific build behaviors. Choices require their
+native component to be selected and do not establish device provider support.
+If a shared default would replace additional inherited feature assignments or
+component metadata, generation requires an explicit choice for that component;
+the override preserves that data.
 
 Names use lowercase letters, digits and underscores, starting with a letter.
 Android logical/slotselect/avb fstab flags are rejected. Image sizes are byte

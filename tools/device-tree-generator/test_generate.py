@@ -43,6 +43,29 @@ class GeneratorTests(unittest.TestCase):
                 with self.assertRaises(generate.InputError):
                     generate.validate_input(data)
 
+    def test_product_feature_choices_are_typed_and_unknown_ids_fail(self):
+        for value in ({"safwk_run_on_demand_qos": True},
+                      {"hitrace_executable": False}, {}):
+            data = copy.deepcopy(self.data)
+            data["product_features"] = value
+            generate.validate_input(data)
+        for value in ({"safwk_run_on_demand_qos": 1}, {"typo": True}, [], None):
+            data = copy.deepcopy(self.data)
+            data["product_features"] = value
+            with self.subTest(value=value), self.assertRaises(generate.InputError):
+                generate.validate_input(data)
+
+    def test_product_feature_overrides_preserve_inherited_assignment_lists(self):
+        contracts = {"product_feature_components": [{"subsystem": "hiviewdfx", "components": [{
+            "component": "hitrace", "features": ["hitrace_support_executable_file = true",
+                                                        "hitrace_custom_assignment = false"]}]}]}
+        files, _ = generate.render(self.data, contracts, generate.evidence.load_extractions([]))
+        config = generate.json.loads(files["vendor/opendroid/opendroid_demo/config.json"])
+        parts = [part for subsystem in config["subsystems"] for part in subsystem["components"]]
+        self.assertIn({"component": "product_opendroid_demo"}, parts)
+        self.assertEqual(next(part["features"] for part in parts if part["component"] == "hitrace"),
+                         ["hitrace_support_executable_file = true", "hitrace_custom_assignment = false"])
+
     def test_init_modes_control_ramdisk_and_keep_board_requirements_out_of_common_soc(self):
         data = copy.deepcopy(self.data)
         files, reports = generate.render(data, {}, generate.evidence.load_extractions([]))

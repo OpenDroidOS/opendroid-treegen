@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import generate
 import source_contracts
@@ -79,6 +80,61 @@ def gen_install_dests(system_base_dir, ramdisk_base_dir, vendor_base_dir, update
     def inspect(self):
         return source_contracts.inspect(self.root, self.data, self.selections)
 
+    def test_direct_product_file_does_not_follow_nested_inherit(self):
+        files = {
+            "base.json": {"inherit": ["nested.json"], "subsystems": [{"subsystem": "a", "components": [{"component": "direct"}]}]},
+            "nested.json": {"subsystems": [{"subsystem": "a", "components": [{"component": "nested"}]}]},
+        }
+        reads, selected = [], {}
+
+        def read(path):
+            reads.append(path)
+            return json.dumps(files[path])
+
+        def selection(value, label):
+            for subsystem in value["subsystems"]:
+                for component in subsystem["components"]:
+                    selected[(subsystem["subsystem"], component["component"])] = component
+
+        source_contracts._select_product_file("base.json", read, selection)
+        self.assertEqual(reads, ["base.json"])
+        self.assertIn(("a", "direct"), selected)
+        self.assertNotIn(("a", "nested"), selected)
+
+    def test_common_default_rejects_unmanaged_assignment_but_explicit_choice_preserves_it(self):
+        catalog = {"trace": {"subsystem": "hiviewdfx", "component": "hitrace",
+                             "feature": "trace_enabled", "default": False}}
+        upstream = {("hiviewdfx", "hitrace"): {
+            "component": "hitrace", "features": ["trace_enabled = false", "local_diagnostic = true",
+                                                    "local_count = 7", 'local_name = "native"']}}
+        with self.assertRaisesRegex(source_contracts.ContractError, "local_diagnostic.*explicit product_features"):
+            source_contracts._product_feature_components(upstream, catalog, {})
+        result = source_contracts._product_feature_components(upstream, catalog, {"trace": True})
+        self.assertEqual(result[0]["components"][0]["features"],
+                         ['local_count = 7', 'local_diagnostic = true', 'local_name = "native"',
+                          "trace_enabled = true"])
+
+    def test_common_default_rejects_inherited_metadata_but_explicit_choice_preserves_it(self):
+        catalog = {"trace": {"subsystem": "hiviewdfx", "component": "hitrace",
+                             "feature": "trace_enabled", "default": False}}
+        upstream = {("hiviewdfx", "hitrace"): {
+            "component": "hitrace", "features": ["trace_enabled = false"],
+            "syscap": ["SystemCapability.HiviewDFX.HiTrace"],
+            "exclusions": ["module = diagnostic_stub"],
+        }}
+        with self.assertRaisesRegex(source_contracts.ContractError, "exclusions.*syscap.*explicit product_features"):
+            source_contracts._product_feature_components(upstream, catalog, {})
+        component = source_contracts._product_feature_components(
+            upstream, catalog, {"trace": True})[0]["components"][0]
+        self.assertEqual(component["syscap"], upstream[("hiviewdfx", "hitrace")]["syscap"])
+        self.assertEqual(component["exclusions"], upstream[("hiviewdfx", "hitrace")]["exclusions"])
+
+    def test_catalog_component_must_exist_before_common_defaults(self):
+        catalog = {"trace": {"subsystem": "hiviewdfx", "component": "hitrace",
+                             "feature": "trace_enabled", "default": False}}
+        with self.assertRaisesRegex(source_contracts.ContractError, "not selected by the upstream profile"):
+            source_contracts._product_feature_components({}, catalog, {"trace": True})
+
     def test_comments_and_unrelated_edits_change_evidence_without_blocking_generation(self):
         before = self.inspect()
         path = "build/templates/cxx/prebuilt.gni"
@@ -92,8 +148,9 @@ def gen_install_dests(system_base_dir, ramdisk_base_dir, vendor_base_dir, update
         input_path = Path(self.temporary.name) / "input.json"
         input_path.write_text(generate.json_text(self.data))
         output = Path(self.temporary.name) / "tree"
-        with self.assertRaisesRegex(generate.InputError, "GN template is absent"):
-            generate.generate(input_path, output, self.root)
+        with patch.dict(generate.product_features.CATALOG, {}, clear=True):
+            with self.assertRaisesRegex(generate.InputError, "GN template is absent"):
+                generate.generate(input_path, output, self.root)
         self.assertFalse(output.exists())
         self.assertFalse(output.with_name("tree-reports").exists())
 
@@ -144,12 +201,11 @@ def gen_install_dests(system_base_dir, ramdisk_base_dir, vendor_base_dir, update
         self.assertEqual(result["subsystem"], "wukong")
         self.assertEqual(result["declared_subsystem"], "ostest")
 
-    def test_inheritance_cycles_and_unsafe_paths_fail(self):
-        for inherit in ([self.data["base_product"]], ["../outside.json"]):
-            with self.subTest(inherit=inherit):
-                self.write(self.data["base_product"], {"inherit": inherit, "subsystems": []})
-                with self.assertRaisesRegex(source_contracts.ContractError, "cycle|Unsafe"):
-                    self.inspect()
+    def test_nested_source_inherit_entries_are_not_recursed(self):
+        self.write("productdefine/common/nested.json", {"subsystems": [{
+            "subsystem": "security", "components": [{"component": "nested_only"}]}]})
+        self.write(self.data["base_product"], {"inherit": ["productdefine/common/nested.json"], "subsystems": []})
+        self.assertEqual([entry["component"] for entry in self.inspect()["components"]], ["selinux_adapter"])
 
     def test_excluded_component_is_not_required(self):
         self.write(self.data["base_product"], {"subsystems": [{"subsystem": "security", "components": [

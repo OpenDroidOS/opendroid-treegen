@@ -1,0 +1,18 @@
+[
+  {
+    "id": "safwk_run_on_demand_qos",
+    "subsystem": "systemabilitymgr",
+    "component": "safwk",
+    "feature": "safwk_enable_run_on_demand_qos",
+    "default": false,
+    "description": "Build SAFWK run-on-demand QoS support."
+  },
+  {
+    "id": "hitrace_executable",
+    "subsystem": "hiviewdfx",
+    "component": "hitrace",
+    "feature": "hitrace_support_executable_file",
+    "default": true,
+    "description": "Build the Hitrace executable tools."
+  }
+]

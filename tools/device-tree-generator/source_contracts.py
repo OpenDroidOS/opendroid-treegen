@@ -28,6 +28,57 @@ class ContractError(ValueError):
     """The checkout lacks a source interface used by the generated files."""
 
 
+def _select_product_file(relative, read, selection):
+    """Apply one directly inherited product file without following its inherit list."""
+    value = _json(read(relative), relative)
+    if not isinstance(value, dict):
+        raise ContractError(f"Invalid product config: {relative}")
+    selection(value, relative)
+
+
+def _product_feature_components(upstream_selected, feature_catalog, choices):
+    components = []
+    unknown = set(choices) - set(feature_catalog)
+    if unknown:
+        raise ContractError(f"Unknown product feature: {sorted(unknown)}")
+    catalog_groups = {}
+    for option, item in feature_catalog.items():
+        identity = (item["subsystem"], item["component"])
+        catalog_groups.setdefault(identity, []).append((option, item))
+    for identity, options in sorted(catalog_groups.items()):
+        original = upstream_selected.get(identity)
+        if original is None:
+            raise ContractError(
+                f"Product feature component is not selected by the upstream profile: {identity[0]}:{identity[1]}")
+        assignments = {}
+        for assignment in original.get("features", []):
+            if not isinstance(assignment, str) or "=" not in assignment:
+                raise ContractError(f"Invalid inherited feature assignment: {identity[0]}:{identity[1]}")
+            name, value = (part.strip() for part in assignment.split("=", 1))
+            if name in assignments and assignments[name] != value:
+                raise ContractError(f"Conflicting inherited feature assignment: {identity[0]}:{identity[1]}:{name}")
+            assignments[name] = value
+        managed = {item["feature"] for _, item in options}
+        selected = [(option, item) for option, item in options if option in choices]
+        dropped = set(assignments) - managed
+        dropped_metadata = set(original) - {"component", "features"}
+        if (dropped or dropped_metadata) and not selected:
+            lost = sorted(dropped | dropped_metadata)
+            raise ContractError(
+                f"Common product feature defaults would replace inherited {identity[0]}:{identity[1]} "
+                f"data {lost}; add an explicit product_features choice to preserve it")
+        for _, item in options:
+            assignments[item["feature"]] = str(item["default"]).lower()
+        for option, item in selected:
+            assignments[item["feature"]] = str(choices[option]).lower()
+        if selected:
+            entry = {key: value for key, value in original.items() if key not in ("component", "features")}
+            entry["component"] = identity[1]
+            entry["features"] = [f"{name} = {value}" for name, value in sorted(assignments.items())]
+            components.append({"subsystem": identity[0], "components": [entry]})
+    return components
+
+
 def _json(text, label):
     try:
         # Match the checkout loader's last-key-wins JSON semantics.
@@ -43,7 +94,7 @@ def _code(text):
     return re.sub(pattern, lambda match: "" if match[0].startswith(("#", "//", "/*")) else match[0], text)
 
 
-def inspect(root, data, common_selections):
+def inspect(root, data, common_selections, feature_catalog=None, feature_choices=None):
     root = root.resolve()
     observed, checks, selected = {}, [], {}
 
@@ -104,23 +155,18 @@ def inspect(root, data, common_selections):
                 else:
                     selected[identity] = component
 
-    def product(relative, stack=()):
-        if relative in stack:
-            raise ContractError(f"Product inheritance cycle: {relative}")
-        value = _json(read(relative), relative)
-        if not isinstance(value, dict) or not isinstance(value.get("inherit", []), list):
-            raise ContractError(f"Invalid product inheritance: {relative}")
-        for inherited in value.get("inherit", []):
-            if not isinstance(inherited, str):
-                raise ContractError(f"Invalid inherited product path: {relative}")
-            product(inherited, stack + (relative,))
-        selection(value, relative)
-
-    product(data["base_product"])
+    # hb reads direct product inherit files only; it does not recursively
+    # traverse inherit entries found inside those files.
+    _select_product_file(data["base_product"], read, selection)
     if data.get("system_profile") == "tablet":
-        product("productdefine/common/inherit/tablet.json")
+        _select_product_file("productdefine/common/inherit/tablet.json", read, selection)
+    upstream_selected = dict(selected)
     for value in common_selections:
         selection(value, "generated common configuration")
+    product_feature_components = _product_feature_components(
+        upstream_selected, feature_catalog or {}, feature_choices or {})
+    if product_feature_components:
+        selection({"subsystems": product_feature_components}, "generated product feature overrides")
     checks.append({"interface": "product JSON", "checked": "inheritance, subsystem/component lists and exclusions"})
 
     python_api("build/hb/util/product_util.py", {
@@ -251,6 +297,7 @@ def inspect(root, data, common_selections):
     checks.append({"interface": "component registry", "checked": "selected component names and feature declarations"})
     return {
         "format_version": 1, "checks": checks, "components": components,
+        "product_feature_components": product_feature_components,
         "files_sha256": dict(sorted(observed.items())), "unreadable_registry_entries": ignored,
         "unavailable_unselected_paths": sorted(set(unavailable)),
         "limits": ["Source declarations were inspected without executing checkout code.",

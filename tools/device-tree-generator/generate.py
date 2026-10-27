@@ -27,6 +27,7 @@ import evidence
 import native_layout
 import native_config
 import source_contracts
+import product_features
 
 
 FEATURES = (
@@ -80,7 +81,8 @@ def validate_input(data):
     allowed = {"schema_version", "source_profile", "company", "board", "product",
                "target_cpu", "base_product", "kernel_strategy", "providers", "notes", "soc", "soc_company",
                "system_profile", "native_config", "module_load_order", "init_mode"}
-    required = allowed - {"providers", "notes", "system_profile", "native_config", "module_load_order", "source_profile"}
+    allowed.add("product_features")
+    required = allowed - {"providers", "notes", "system_profile", "native_config", "module_load_order", "source_profile", "product_features"}
     if set(data) - allowed:
         raise InputError(f"Unknown input fields: {sorted(set(data) - allowed)}")
     if required - set(data):
@@ -104,6 +106,10 @@ def validate_input(data):
         raise InputError("system_profile must be base or tablet")
     if data["init_mode"] not in ("single-stage", "two-stage"):
         raise InputError("init_mode must be single-stage or two-stage")
+    try:
+        product_features.validate(data.get("product_features", {}))
+    except ValueError as error:
+        raise InputError(str(error)) from error
     order = data.get("module_load_order", [])
     if not isinstance(order, list) or any(
         not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_+./-]+\.ko", name)
@@ -134,7 +140,8 @@ def verify_source(root, data):
     if data.get("system_profile") == "tablet":
         selections.append(json.loads(generated["vendor/opendroid/common/tablet.json"]))
     try:
-        return source_contracts.inspect(root, data, selections)
+        return source_contracts.inspect(root, data, selections, product_features.CATALOG,
+                                        data.get("product_features", {}))
     except source_contracts.ContractError as error:
         raise InputError(str(error)) from error
 
@@ -203,6 +210,9 @@ def render(data, contracts, prebuilts):
         "subsystems": [{"subsystem": f"product_{product}",
                         "components": [{"component": f"product_{product}"}]}],
     }
+    product_overrides = contracts.get("product_feature_components", [])
+    if product_overrides:
+        config["subsystems"].extend(product_overrides)
     if data.get("system_profile") == "tablet":
         config["inherit"].insert(1, "productdefine/common/inherit/tablet.json")
         config["inherit"].append("vendor/opendroid/common/tablet.json")
@@ -271,6 +281,7 @@ def render(data, contracts, prebuilts):
         "generator_sha256": digest(Path(__file__).read_bytes()),
         "layout_sha256": digest(Path(native_layout.__file__).read_bytes()),
         "native_config_sha256": digest(Path(native_config.__file__).read_bytes()),
+        "product_features_sha256": digest(Path(product_features.__file__).read_bytes()),
         "evidence_reader_sha256": digest(Path(evidence.__file__).read_bytes()),
         "extraction_report_sha256": [r["report_sha256"] for r in prebuilts["reports"]],
         "source_inspector_sha256": digest(Path(source_contracts.__file__).read_bytes()),

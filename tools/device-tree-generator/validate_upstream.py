@@ -24,6 +24,7 @@ import tempfile
 from types import SimpleNamespace
 
 import generate
+import product_features
 
 
 def required_fstab_destination(source, data):
@@ -119,6 +120,23 @@ def validate(source, output, reports=None):
             built_in_base_dir=str(base.parent), vendor_dir=str(root / "vendor"), device_dir=str(root / "device"),
         )
         parsed = Product(dirs, fixture_config)
+        native_features = product_util.ProductUtil.get_features_dict(fixture_config.product_json)
+        for option, item in product_features.CATALOG.items():
+            expected = data.get("product_features", {}).get(option, item["default"])
+            if native_features.get(item["feature"]) is not expected:
+                raise generate.InputError(
+                    f"Native ProductUtil feature differs for {option}: "
+                    f"expected {expected}, got {native_features.get(item['feature'])}")
+        for subsystem in inspection.get("product_feature_components", []):
+            for component in subsystem["components"]:
+                identity = f"{subsystem['subsystem']}:{component['component']}"
+                expected_part = product_util.ProductUtil.get_vendor_parts_list(
+                    {"subsystems": [subsystem]})[identity]
+                actual_part = product_util.ProductUtil.get_all_components(fixture_config.product_json).get(identity, {})
+                if actual_part != expected_part:
+                    raise generate.InputError(
+                        f"Native ProductUtil dropped inherited component data for {identity}: "
+                        f"expected {expected_part}, got {actual_part}")
         identities = [f"device_{data['board']}", f"product_{product}"]
         subsystems = {**parsed._get_device_specific_subsystem(), **parsed._get_product_specific_subsystem()}
         empty = root / "empty.json"

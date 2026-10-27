@@ -4,5 +4,15 @@ Copyright 2026 OpenDroidOS
 Original tooling is licensed under Apache-2.0.
 Uses OpenHarmony build and native configuration interfaces.
 
+tools/prebuilt-extractor/third_party/aosp/unpack_bootimg.py is unchanged AOSP
+source:
+Copyright 2018, The Android Open Source Project
+Apache License, Version 2.0; see
+tools/prebuilt-extractor/third_party/aosp/LICENSE and UPSTREAM.json.
+Its output functions are intercepted; OpenDroidOS bounded writers handle
+extraction.
+
 OpenHarmony: https://github.com/openharmony
 Linux firmware interface: https://docs.kernel.org/driver-api/firmware/fw_search_path.html
+OpenHarmony's source, build framework, hardware interfaces and documentation
+retain their original authors and terms.

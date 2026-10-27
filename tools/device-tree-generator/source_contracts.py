@@ -36,7 +36,8 @@ def _select_product_file(relative, read, selection):
     selection(value, relative)
 
 
-def _product_feature_components(upstream_selected, feature_catalog, choices):
+def _product_feature_components(upstream_selected, feature_catalog, choices, common_selected=None,
+                                bootstrap_common=False):
     components = []
     unknown = set(choices) - set(feature_catalog)
     if unknown:
@@ -46,10 +47,44 @@ def _product_feature_components(upstream_selected, feature_catalog, choices):
         identity = (item["subsystem"], item["component"])
         catalog_groups.setdefault(identity, []).append((option, item))
     for identity, options in sorted(catalog_groups.items()):
-        original = upstream_selected.get(identity)
-        if original is None:
+        inherited = upstream_selected.get(identity)
+        if inherited is None:
             raise ContractError(
                 f"Product feature component is not selected by the upstream profile: {identity[0]}:{identity[1]}")
+        selected = [(option, item) for option, item in options if option in choices]
+        default_entry = (common_selected or {}).get(identity, inherited)
+        # In bootstrap mode the generated common fragment replaces the whole
+        # native component entry. Do not silently lose native fields when no
+        # product choice causes us to emit a preserving override.
+        if bootstrap_common and not selected:
+            lost_keys = set(inherited) - set(default_entry)
+            managed = {item["feature"] for _, item in options}
+
+            def unmanaged_features(component):
+                parsed = {}
+                for assignment in component.get("features", []):
+                    if not isinstance(assignment, str) or "=" not in assignment:
+                        raise ContractError(
+                            f"Invalid inherited feature assignment: {identity[0]}:{identity[1]}")
+                    name, value = (part.strip() for part in assignment.split("=", 1))
+                    if name not in managed:
+                        parsed[name] = value
+                return parsed
+
+            original_features = unmanaged_features(inherited)
+            default_features = unmanaged_features(default_entry)
+            lost_features = {name for name, value in original_features.items()
+                             if default_features.get(name) != value}
+            if lost_keys or lost_features:
+                details = ", ".join(sorted(lost_keys | ({"features"} if lost_features else set())))
+                raise ContractError(
+                    f"Generated common defaults would discard inherited {identity[0]}:{identity[1]} "
+                    f"fields ({details}); add an explicit product_features choice to preserve them")
+        if not selected:
+            continue
+        # For bootstrap choices, copy the effective upstream entry so its
+        # unrelated native features and metadata survive the product override.
+        original = inherited if bootstrap_common else default_entry
         assignments = {}
         for assignment in original.get("features", []):
             if not isinstance(assignment, str) or "=" not in assignment:
@@ -58,15 +93,6 @@ def _product_feature_components(upstream_selected, feature_catalog, choices):
             if name in assignments and assignments[name] != value:
                 raise ContractError(f"Conflicting inherited feature assignment: {identity[0]}:{identity[1]}:{name}")
             assignments[name] = value
-        managed = {item["feature"] for _, item in options}
-        selected = [(option, item) for option, item in options if option in choices]
-        dropped = set(assignments) - managed
-        dropped_metadata = set(original) - {"component", "features"}
-        if (dropped or dropped_metadata) and not selected:
-            lost = sorted(dropped | dropped_metadata)
-            raise ContractError(
-                f"Common product feature defaults would replace inherited {identity[0]}:{identity[1]} "
-                f"data {lost}; add an explicit product_features choice to preserve it")
         for _, item in options:
             assignments[item["feature"]] = str(item["default"]).lower()
         for option, item in selected:
@@ -94,7 +120,8 @@ def _code(text):
     return re.sub(pattern, lambda match: "" if match[0].startswith(("#", "//", "/*")) else match[0], text)
 
 
-def inspect(root, data, common_selections, feature_catalog=None, feature_choices=None):
+def inspect(root, data, common_selections=None, feature_catalog=None, feature_choices=None,
+            bootstrap_common=False):
     root = root.resolve()
     observed, checks, selected = {}, [], {}
 
@@ -155,6 +182,27 @@ def inspect(root, data, common_selections, feature_catalog=None, feature_choices
                 else:
                     selected[identity] = component
 
+    if common_selections is None and feature_catalog is not None:
+        base_path = "vendor/opendroid/common/base.json"
+        catalog_path = "vendor/opendroid/common/product-features.json"
+        common_selections = [_json(read(base_path), base_path)]
+        actual_catalog = _json(read(catalog_path), catalog_path)
+        if not isinstance(actual_catalog, list):
+            raise ContractError(f"Invalid product feature catalog: {catalog_path}")
+        actual_catalog = {item.get("id"): item for item in actual_catalog if isinstance(item, dict)}
+        if set(actual_catalog) != set(feature_catalog or {}):
+            raise ContractError(f"Product feature catalog IDs differ from generator contract: {catalog_path}")
+        for option, expected in (feature_catalog or {}).items():
+            item = actual_catalog[option]
+            fields = ("subsystem", "component", "feature", "default")
+            if any(item.get(field) != expected.get(field) for field in fields) or type(item.get("default")) is not bool:
+                raise ContractError(f"Product feature catalog differs from generator contract: {catalog_path}: {option}")
+        if data.get("system_profile") == "tablet":
+            tablet_path = "vendor/opendroid/common/tablet.json"
+            common_selections.append(_json(read(tablet_path), tablet_path))
+    elif common_selections is None:
+        common_selections = []
+
     # hb reads direct product inherit files only; it does not recursively
     # traverse inherit entries found inside those files.
     _select_product_file(data["base_product"], read, selection)
@@ -162,9 +210,10 @@ def inspect(root, data, common_selections, feature_catalog=None, feature_choices
         _select_product_file("productdefine/common/inherit/tablet.json", read, selection)
     upstream_selected = dict(selected)
     for value in common_selections:
-        selection(value, "generated common configuration")
+        selection(value, "source common configuration")
+    common_selected = dict(selected)
     product_feature_components = _product_feature_components(
-        upstream_selected, feature_catalog or {}, feature_choices or {})
+        upstream_selected, feature_catalog or {}, feature_choices or {}, common_selected, bootstrap_common)
     if product_feature_components:
         selection({"subsystems": product_feature_components}, "generated product feature overrides")
     checks.append({"interface": "product JSON", "checked": "inheritance, subsystem/component lists and exclusions"})
@@ -295,9 +344,29 @@ def inspect(root, data, common_selections, feature_catalog=None, feature_choices
         components.append({"subsystem": identity[0], "component": identity[1], "bundle": path,
                            "declared_subsystem": component["subsystem"]})
     checks.append({"interface": "component registry", "checked": "selected component names and feature declarations"})
+    feature_defaults = {}
+    for option, item in (feature_catalog or {}).items():
+        selected_component = common_selected.get((item["subsystem"], item["component"]))
+        assignments = selected_component.get("features", []) if selected_component else []
+        expected_assignment = None
+        for assignment in assignments:
+            if isinstance(assignment, str) and "=" in assignment:
+                name, value = (part.strip() for part in assignment.split("=", 1))
+                if name == item["feature"]:
+                    expected_assignment = value
+        if expected_assignment not in ("true", "false"):
+            raise ContractError(
+                f"Source common feature assignment is absent or non-Boolean: "
+                f"{item['subsystem']}:{item['component']}:{item['feature']}")
+        if expected_assignment != str(item["default"]).lower():
+            raise ContractError(
+                f"Source common feature default differs from catalog: "
+                f"{item['subsystem']}:{item['component']}:{item['feature']}")
+        feature_defaults[option] = expected_assignment == "true"
     return {
         "format_version": 1, "checks": checks, "components": components,
         "product_feature_components": product_feature_components,
+        "product_feature_defaults": feature_defaults,
         "files_sha256": dict(sorted(observed.items())), "unreadable_registry_entries": ignored,
         "unavailable_unselected_paths": sorted(set(unavailable)),
         "limits": ["Source declarations were inspected without executing checkout code.",

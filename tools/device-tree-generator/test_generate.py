@@ -89,6 +89,18 @@ class GeneratorTests(unittest.TestCase):
         self.assertIs(generate.json.loads(files["vendor/opendroid/opendroid_demo/config.json"])["enable_ramdisk"], False)
         self.assertNotIn("kernel/opendroid/demo_board/requirements.json", files)
 
+    def test_source_requirement_values_cannot_weaken_requested_values(self):
+        expected = {"CONFIG_EXT4_FS": ["y"]}
+        for actual in (
+                {"format_version": 1, "required_options": {"CONFIG_EXT4_FS": ["y", "m"]}},
+                {"format_version": 1, "required_options": {"CONFIG_EXT4_FS": [True]}},
+                {"format_version": 1, "required_options": {"CONFIG_EXT4_FS": []}},
+                {"format_version": 1, "required_options": {"CONFIG_EXTRA": ["unknown"]}}):
+            with self.subTest(actual=actual), self.assertRaises(generate.InputError):
+                generate._requirements_match(actual, expected, "kernel/board/requirements.json", "board")
+        generate._requirements_match({"format_version": 1, "required_options": {"CONFIG_EXT4_FS": ["y"]}},
+                                     expected, "kernel/board/requirements.json", "board")
+
     def test_init_mode_and_schema_migration_are_explicit(self):
         data = copy.deepcopy(self.data)
         del data["init_mode"]
@@ -182,7 +194,7 @@ class GeneratorTests(unittest.TestCase):
             input_path = root / "input.json"
             input_path.write_text(generate.json_text(self.data))
             with patch.object(generate, "verify_source", return_value={}):
-                generate.generate(input_path, root / "tree", source)
+                generate.generate(input_path, root / "tree", source, bootstrap_platform=True)
             helper = root / "tree/vendor/opendroid/common/scripts/stage_kernel.py"
             self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
             helper.chmod(0o644)
@@ -212,17 +224,23 @@ class GeneratorTests(unittest.TestCase):
             with patch.object(generate, "verify_source", return_value={}):
                 generate.generate(input_path, output, source, reports=reports)
                 generate.check(output, reports)
-                self.assertEqual({p.name for p in output.iterdir()}, {"device", "vendor", "kernel"})
+                self.assertEqual({p.name for p in output.iterdir()}, {"device", "vendor"})
                 self.assertTrue((reports / "PORTING.md").is_file())
                 self.assertTrue((output / "device/board/opendroid/demo_board/config.gni").is_file())
-                self.assertTrue((output / "device/soc/generic/generic_arm64/kernel/requirements.json").is_file())
-                kernel = output / "kernel/opendroid/demo_board/BUILD.gn"
-                self.assertIn("stage_kernel.py", kernel.read_text())
-                self.assertIn('declare_args()', kernel.read_text())
-                self.assertIn("opendroid_kernel_selection", kernel.read_text())
-                self.assertIn("opendroid.para", (output / "vendor/opendroid/common/BUILD.gn").read_text())
+                self.assertFalse((output / "device/soc").exists())
+                self.assertFalse((output / "kernel").exists())
                 self.assertIn('cfg:native_configs', (output / "device/board/opendroid/demo_board/BUILD.gn").read_text())
                 self.assertIn('image_conf:image_configs', (output / "device/board/opendroid/demo_board/BUILD.gn").read_text())
+                manifest = generate.read_json(reports / "generation-manifest.json")
+                self.assertEqual(manifest["output_scope"], "board-product")
+                self.assertTrue(all(path.startswith(("device/board/", "vendor/opendroid/opendroid_demo/"))
+                                    for path in manifest["files"]))
+                with patch.object(generate, "verify_source", return_value={}):
+                    generate.generate(input_path, root / "bootstrap", source, bootstrap_platform=True)
+                self.assertEqual({p.name for p in (root / "bootstrap").iterdir()},
+                                 {"device", "vendor", "kernel"})
+                self.assertTrue((root / "bootstrap/device/soc/generic/generic_arm64/kernel/requirements.json").is_file())
+                self.assertTrue((root / "bootstrap/kernel/opendroid/demo_board/BUILD.gn").is_file())
                 config = generate.read_json(output / "vendor/opendroid/opendroid_demo/config.json")
                 self.assertIn("productdefine/common/inherit/tablet.json", config["inherit"])
                 self.assertGreater(config["inherit"].index("vendor/opendroid/common/tablet.json"),

@@ -27,15 +27,46 @@ import generate
 from runtime import stage_kernel
 
 
-def validate(output, reports, gn):
+def validate(output, reports, gn, source_root=None):
     generate.check(output, reports)
     data = generate.read_json(reports / "porting-input.json")
     layout = generate.read_json(reports / "support-report.json")["layout"]
+    manifest = generate.read_json(reports / "generation-manifest.json")
+    output_scope = manifest.get("output_scope", "bootstrap-platform")
+    if output_scope == "board-product" and source_root is None:
+        raise generate.InputError(
+            "Board/product GN validation needs --source-root to supply existing common, SoC and kernel interfaces")
     commands = []
     with tempfile.TemporaryDirectory(prefix=".gn-fixture-", dir=output.parent) as temporary:
         root = Path(temporary)
         for directory in ("device", "vendor", "kernel"):
-            shutil.copytree(output / directory, root / directory)
+            if (output / directory).is_dir():
+                shutil.copytree(output / directory, root / directory)
+        if output_scope == "board-product":
+            kernel = f"kernel/{data['company']}/{data['board']}"
+            required = [
+                f"device/soc/{data['soc_company']}/{data['soc']}/config.gni",
+                f"device/soc/{data['soc_company']}/{data['soc']}/kernel/requirements.json",
+                f"{kernel}/BUILD.gn",
+                "vendor/opendroid/common/BUILD.gn",
+                "vendor/opendroid/common/opendroid.para",
+                "vendor/opendroid/common/scripts/stage_kernel.py",
+            ]
+            for relative in required:
+                candidate = source_root / relative
+                if not candidate.is_file():
+                    raise generate.InputError(
+                        f"Board/product GN validation requires source-provided {relative}; "
+                        "add the kernel integration or use --bootstrap-platform to validate a starter")
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(candidate, destination)
+            for relative in (f"{kernel}/requirements.json", f"{kernel}/module-order.json"):
+                candidate = source_root / relative
+                if candidate.is_file():
+                    destination = root / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(candidate, destination)
         (root / "build").mkdir()
         (root / "toolchain").mkdir()
         (root / ".gn").write_text(
@@ -351,9 +382,12 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--reports", type=Path)
     parser.add_argument("--gn", required=True, type=Path)
+    parser.add_argument("--source-root", type=Path,
+                        help="Checkout providing common, SoC and kernel interfaces for board-product output")
     args = parser.parse_args()
     try:
-        print(generate.json_text(validate(args.output.resolve(), generate.report_root(args.output, args.reports).resolve(), args.gn.resolve())), end="")
+        print(generate.json_text(validate(args.output.resolve(), generate.report_root(args.output, args.reports).resolve(),
+                                          args.gn.resolve(), args.source_root.resolve() if args.source_root else None)), end="")
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

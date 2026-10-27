@@ -1,0 +1,12 @@
+{
+  "project": "Android Open Source Project",
+  "repository": "https://android.googlesource.com/platform/system/tools/mkbootimg/",
+  "revision": "954bc3ead5e679005fddf3484d247f2557b3c2c9",
+  "source": "https://android.googlesource.com/platform/system/tools/mkbootimg/+/954bc3ead5e679005fddf3484d247f2557b3c2c9/unpack_bootimg.py",
+  "file": "unpack_bootimg.py",
+  "sha256": "06b54dd9a07c5281778e29e234e76f6e3faee8bf0c904a5ef88fdee30eeed12e",
+  "license": "Apache-2.0",
+  "copyright": "Copyright 2018, The Android Open Source Project",
+  "local_modifications": false,
+  "retained": "2026-10-26"
+}

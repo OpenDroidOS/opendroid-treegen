@@ -36,5 +36,8 @@ Linux; Python 3.10+ for extraction, 3.9+ for generation. Details:
 [generation](tools/device-tree-generator/README.txt) and
 [extraction](tools/prebuilt-extractor/README.md).
 
+Use `module-plan` to check selected kernel modules and generate native init
+configuration. See [kernel module plans](tools/kernel-modules/README.md).
+
 Copyright 2026 OpenDroidOS. Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 Built for [OpenHarmony](https://github.com/openharmony).

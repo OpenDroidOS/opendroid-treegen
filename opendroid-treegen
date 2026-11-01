@@ -24,18 +24,19 @@ COMMANDS = {
     "generate": ROOT / "tools/device-tree-generator/generate.py",
     "check": ROOT / "tools/device-tree-generator/generate.py",
     "extract": ROOT / "tools/prebuilt-extractor/extract.py",
+    "module-plan": ROOT / "tools/kernel-modules/module_plan.py",
 }
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("Usage: opendroid-treegen {generate|check|extract} ...")
+        print("Usage: opendroid-treegen {generate|check|extract|module-plan} ...")
         print("Run 'opendroid-treegen COMMAND --help' for command options.")
         return 0
     command = sys.argv[1]
     if command not in COMMANDS:
         print(f"opendroid-treegen: unknown command: {command}", file=sys.stderr)
-        print("Choose generate, check or extract.", file=sys.stderr)
+        print("Choose generate, check, extract or module-plan.", file=sys.stderr)
         return 2
     script = COMMANDS[command]
     forwarded = [command, *sys.argv[2:]] if command in ("generate", "check") else sys.argv[2:]
